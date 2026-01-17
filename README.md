@@ -12,7 +12,7 @@ ollama pull llama3.2:1b
 ollama serve
 
 To run the program:
-uvicorn travel_assistant:app --host 127.0.0.1 --port 8000 --reload
-then open the travel assistant react.html file (Keep the ollama cmd terminal open)
+python travel_assistant.py
+Then copy the local or netwrok access url found in terminal
 
 i hate my chud life
