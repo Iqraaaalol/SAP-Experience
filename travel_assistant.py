@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import json
@@ -24,6 +26,8 @@ CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "chroma_db")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "wikivoyage_travel")
 
+# Static files directory
+STATIC_DIR = os.getenv("STATIC_DIR", "./static")
 
 
 class QueryRequest(BaseModel):
@@ -40,11 +44,9 @@ class FeedbackRequest(BaseModel):
     noise_level: float
     overall_comfort: str
 
-def build_context_from_chroma(destination: str, top_k: int = 5) -> str:
-    """Build a model prompt using Chroma KB as the primary source.
 
-    Returns a prompt string if KB entries exist, otherwise returns an empty string.
-    """
+def build_context_from_chroma(destination: str, top_k: int = 5) -> str:
+    """Build a model prompt using Chroma KB as the primary source."""
     if not chroma_manager:
         return ""
 
@@ -89,32 +91,6 @@ def build_context_from_chroma(destination: str, top_k: int = 5) -> str:
     except Exception as e:
         print(f"Chroma context build error: {e}")
         return ""
-    
-    def get_images_for_destination(self, destination: str) -> list:
-        """Get image paths and metadata for destination"""
-        dest_data = self.get_destination_info(destination)
-        
-        if not dest_data:
-            return []
-        
-        images = dest_data.get('images', [])
-        
-        readable_images = []
-        for img in images:
-            local_path = img.get('local_path')
-            if local_path and os.path.exists(local_path):
-                readable_images.append(img)
-        
-        return readable_images
-    
-    def image_to_base64(self, image_path: str) -> str:
-        """Convert image to base64"""
-        try:
-            with open(image_path, 'rb') as f:
-                return base64.b64encode(f.read()).decode('utf-8')
-        except Exception as e:
-            print(f"Error converting image to base64: {e}")
-            return None
 
 
 class ChromaManager:
@@ -147,6 +123,8 @@ class ChromaManager:
 
 
 chroma_manager = None
+
+
 class LlamaInterface:
     def __init__(self, ollama_url: str, model_name: str):
         self.ollama_url = ollama_url
@@ -171,8 +149,7 @@ class LlamaInterface:
                     options = {
                         "temperature": 0.1,        
                         "top_p": 0.6,
-                        "top_k": 3,
-                        "num_predict": 256,
+                        "top_k": 3
                     },
                     keep_alive=-1,
                     stream=False
@@ -187,6 +164,7 @@ class LlamaInterface:
             print(f"Error: {e}")
             return f"Sorry, an error occurred: {str(e)}"
 
+
 print(f"\nInitializing Llama...")
 Llama = LlamaInterface(OLLAMA_URL, MODEL_NAME)
 print(f"Llama ready!\n")
@@ -196,7 +174,6 @@ try:
 except Exception as e:
     print(f"ChromaManager instantiation error: {e}")
     chroma_manager = None
-
 
 
 class QueryCache:
@@ -228,8 +205,6 @@ class QueryCache:
 
 query_cache = QueryCache(ttl_seconds=3600)
 
-
-# DATABASE OPERATIONS
 
 async def init_db():
     """Initialize SQLite database"""
@@ -268,20 +243,29 @@ async def init_db():
         print(f"Database error: {e}")
 
 
-
-# LIFESPAN EVENT HANDLER
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events"""
     await init_db()
-    print(f"Travel Assistant started")
+    
+    # Create static directory if it doesn't exist
+    os.makedirs(STATIC_DIR, exist_ok=True)
+    
+    # Print network access info
+    import socket
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    print(f"\n{'='*60}")
+    print(f"🚀 Travel Assistant Started!")
+    print(f"{'='*60}")
+    print(f"📍 Local Access:    http://localhost:8000")
+    print(f"🌐 Network Access:  http://{local_ip}:8000")
+    print(f"📁 Static Files:    {STATIC_DIR}")
+    print(f"{'='*60}\n")
     
     yield
     
     print("Travel Assistant shutting down")
-
 
 
 # FASTAPI APP
@@ -297,9 +281,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files directory
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-# API ENDPOINTS
+# Root endpoint serves the main HTML file
+@app.get("/")
+async def read_root():
+    """Serve the main HTML interface"""
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Place your index.html in the static directory"}
 
 
 @app.get("/api/health")
@@ -331,7 +325,6 @@ async def handle_query(request: QueryRequest):
     
     context_prompt = build_context_from_chroma(request.destination, top_k=3)
 
-    # If there is no Chroma context, try a fallback contextual lookup using the user query
     if not context_prompt and chroma_manager:
         try:
             kb_docs = chroma_manager.query(request.query, top_k=3)
@@ -348,14 +341,9 @@ async def handle_query(request: QueryRequest):
     full_prompt = f"{context_prompt}\n\n{request.query}\n\nAnswer:"
     
     print(f"🤖 Querying for: {request.query[:50]}...")
-    try:
-        print(f"[handle_query] sending prompt (truncated 2000 chars):\n{full_prompt}")
-    except Exception:
-        pass
     answer = await Llama.generate_response(full_prompt)
     
     query_cache.set(cache_key, answer)
-    # Database logging disabled: using pre-populated DB only (no new records)
     
     ts = datetime.now().isoformat()
     print(f"[handle_query] model response - returning timestamp: {ts}")
@@ -370,40 +358,21 @@ async def handle_query(request: QueryRequest):
 @app.post("/api/feedback")
 async def submit_feedback(request: FeedbackRequest):
     """Receive comfort feedback"""
-    try:
-        # Feedback logging disabled: operating on pre-populated DB only (no new records)
-        return {
-            "status": "success",
-            "message": "Feedback received (not logged)",
-            "seatNumber": request.seatNumber
-        }
-    except Exception as e:
-        print(f"Error logging feedback: {e}")
-        # If DB access fails, still return success because writes are intentionally disabled
-        return {
-            "status": "success",
-            "message": "Feedback received (not logged)",
-            "seatNumber": request.seatNumber
-        }
+    return {
+        "status": "success",
+        "message": "Feedback received (not logged)",
+        "seatNumber": request.seatNumber
+    }
 
 
 @app.post("/api/crew-request")
 async def crew_request(request: QueryRequest):
     """Passenger requests crew assistance"""
-    try:
-        # Crew-request logging disabled: using pre-populated DB only (no new records)
-        return {
-            "status": "success",
-            "message": "Crew request submitted (not logged)",
-            "seatNumber": request.seatNumber
-        }
-    except Exception as e:
-        # Writes are intentionally disabled; respond with success
-        return {
-            "status": "success",
-            "message": "Crew request submitted (not logged)",
-            "seatNumber": request.seatNumber
-        }
+    return {
+        "status": "success",
+        "message": "Crew request submitted (not logged)",
+        "seatNumber": request.seatNumber
+    }
 
 
 @app.get("/api/stats")
@@ -430,9 +399,6 @@ async def get_statistics():
     except Exception as e:
         return {"error": str(e)}
 
-
-
-# RUN THE SERVER
 
 if __name__ == "__main__":
     uvicorn.run(
