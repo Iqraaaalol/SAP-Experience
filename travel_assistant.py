@@ -1,0 +1,443 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from pydantic import BaseModel
+import json
+from datetime import datetime
+import aiosqlite
+import os
+import uvicorn
+import asyncio
+from ollama import Client
+from dotenv import load_dotenv
+from wikivoyage_chromadb_bot import ChromaDBManager
+from sentence_transformers import SentenceTransformer
+
+load_dotenv()
+
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:1b")
+DB_FILE = os.getenv("DB_FILE", "./data/aircraft.db")
+
+# Chroma config
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "chroma_db")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "wikivoyage_travel")
+
+
+
+class QueryRequest(BaseModel):
+    query: str
+    destination: str
+    seatNumber: str
+    language: str = "en"
+
+
+class FeedbackRequest(BaseModel):
+    seatNumber: str
+    temperature: float
+    lighting: float
+    noise_level: float
+    overall_comfort: str
+
+def build_context_from_chroma(destination: str, top_k: int = 5) -> str:
+    """Build a model prompt using Chroma KB as the primary source.
+
+    Returns a prompt string if KB entries exist, otherwise returns an empty string.
+    """
+    if not chroma_manager:
+        return ""
+
+    try:
+        kb_docs = chroma_manager.query(destination, top_k=top_k)
+        if not kb_docs:
+            return ""
+            
+        kb_lines = []
+        for doc in kb_docs:
+            title = doc.get('title') or 'Source'
+            content = doc.get('content') or doc.get('text') or str(doc)
+            snippet = content[:2048].strip()
+            kb_lines.append(f"**{title}**:\n{snippet}")
+
+        kb_section = "\n\nKNOWLEDGE BASE (Chroma):\n" + "\n\n".join(kb_lines)
+
+        context = f"""
+        You are a helpful travel assistant on an aircraft providing accurate destination information to passengers.
+
+        IMPORTANT INSTRUCTIONS:
+        - If query is not related to the destination, politely inform the passenger that you can only assist with destination-related questions.
+        - Only provide information that is FACTUALLY ACCURATE
+        - If you're unsure about specific details (addresses, prices, opening hours), say "I don't have specific details, but..."
+        - Do NOT make up business names, addresses, or locations
+        - For activities like skydiving, mention general areas or nearby cities rather than specific made-up venues
+        - Always distinguish between general information and specific recommendations
+        - If asked about specific services, provide general guidance rather than inventing locations
+
+        {kb_section}
+
+        INSTRUCTIONS FOR RESPONSES:
+        - Be warm and welcoming but keep responses concise 
+        - Use the Chroma knowledge base above as your primary reference
+        - Avoid fabricating details about businesses, venues, or services
+        - If unsure, admit lack of specific details rather than fabricating
+
+        PASSENGER MESSAGE:
+        """
+
+        return context
+    except Exception as e:
+        print(f"Chroma context build error: {e}")
+        return ""
+    
+    def get_images_for_destination(self, destination: str) -> list:
+        """Get image paths and metadata for destination"""
+        dest_data = self.get_destination_info(destination)
+        
+        if not dest_data:
+            return []
+        
+        images = dest_data.get('images', [])
+        
+        readable_images = []
+        for img in images:
+            local_path = img.get('local_path')
+            if local_path and os.path.exists(local_path):
+                readable_images.append(img)
+        
+        return readable_images
+    
+    def image_to_base64(self, image_path: str) -> str:
+        """Convert image to base64"""
+        try:
+            with open(image_path, 'rb') as f:
+                return base64.b64encode(f.read()).decode('utf-8')
+        except Exception as e:
+            print(f"Error converting image to base64: {e}")
+            return None
+
+
+class ChromaManager:
+    """Wrapper around ChromaDBManager for compatibility with travel_assistant"""
+    def __init__(self, persist_dir: str = CHROMA_PERSIST_DIR, collection_name: str = "wikivoyage_travel", embedding_model: str = EMBEDDING_MODEL):
+        try:
+            print(persist_dir)
+            self.chroma_db = ChromaDBManager(
+                db_path=persist_dir, 
+                model_name=embedding_model, 
+                collection_name=collection_name
+            )
+            self.collection = self.chroma_db.collection
+            print(f"✅ Chroma initialized (persist_dir={persist_dir}, collection={collection_name})")
+        except Exception as e:
+            print(f"⚠️  Chroma init failed: {e}")
+            self.chroma_db = None
+            self.collection = None
+
+    def query(self, query_text: str, top_k: int = 3) -> list:
+        """Return top_k documents (strings) relevant to the query_text."""
+        if not self.chroma_db:
+            return []
+        try:
+            search_results = self.chroma_db.search(query_text, n_results=top_k)
+            return search_results
+        except Exception as e:
+            print(f"Chroma query error: {e}")
+            return []
+
+
+chroma_manager = None
+class LlamaInterface:
+    def __init__(self, ollama_url: str, model_name: str):
+        self.ollama_url = ollama_url
+        self.model_name = model_name
+        self.client = Client(host=ollama_url)
+        print(f"LlamaInterface initialized")
+        print(f"   Model: {self.model_name}")
+        print(f"   URL: {self.ollama_url}")
+    
+    async def generate_response(self, prompt: str, temperature: float = 0.7) -> str:
+        """Query model using Ollama library"""
+        try:
+            print(f"Querying model: {self.model_name}")
+            
+            loop = asyncio.get_event_loop()
+            
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.generate(
+                    model=self.model_name,
+                    prompt=prompt,
+                    options = {
+                        "temperature": 0.1,        
+                        "top_p": 0.6,
+                        "top_k": 3,
+                        "num_predict": 256,
+                    },
+                    keep_alive=-1,
+                    stream=False
+                )
+            )
+            
+            answer = response['response'].strip()
+            print(f"Got response: {answer[:50]}...")
+            return answer
+        
+        except Exception as e:
+            print(f"Error: {e}")
+            return f"Sorry, an error occurred: {str(e)}"
+
+print(f"\nInitializing Llama...")
+Llama = LlamaInterface(OLLAMA_URL, MODEL_NAME)
+print(f"Llama ready!\n")
+
+try:
+    chroma_manager = ChromaManager(CHROMA_PERSIST_DIR)
+except Exception as e:
+    print(f"ChromaManager instantiation error: {e}")
+    chroma_manager = None
+
+
+
+class QueryCache:
+    def __init__(self, ttl_seconds: int = 3600):
+        self.cache = {}
+        self.ttl = ttl_seconds
+    
+    def get(self, key: str):
+        """Get cached response"""
+        if key in self.cache:
+            entry = self.cache[key]
+            if datetime.now().timestamp() < entry['expires']:
+                return entry['value']
+            else:
+                del self.cache[key]
+        return None
+    
+    def set(self, key: str, value: str):
+        """Cache response"""
+        self.cache[key] = {
+            'value': value,
+            'expires': datetime.now().timestamp() + self.ttl
+        }
+    
+    def generate_key(self, destination: str, query: str) -> str:
+        """Generate cache key"""
+        return f"query:{destination.lower()}:{hash(query)}"
+
+
+query_cache = QueryCache(ttl_seconds=3600)
+
+
+# DATABASE OPERATIONS
+
+async def init_db():
+    """Initialize SQLite database"""
+    try:
+        os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
+        
+        db = await aiosqlite.connect(DB_FILE)
+        
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS passengerQueries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seatNumber TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                queryText TEXT NOT NULL,
+                responseText TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS comfortFeedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seatNumber TEXT NOT NULL,
+                temperature FLOAT,
+                lighting FLOAT,
+                noise_level FLOAT,
+                overall_comfort TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        await db.commit()
+        await db.close()
+        print("Database initialized")
+    except Exception as e:
+        print(f"Database error: {e}")
+
+
+
+# LIFESPAN EVENT HANDLER
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and shutdown events"""
+    await init_db()
+    print(f"Travel Assistant started")
+    
+    yield
+    
+    print("Travel Assistant shutting down")
+
+
+
+# FASTAPI APP
+app = FastAPI(
+    title="Aircraft Travel Assistant with Destinations",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
+# API ENDPOINTS
+
+
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "model": MODEL_NAME,
+        "chroma_available": chroma_manager is not None
+    }
+
+
+@app.post("/api/query")
+async def handle_query(request: QueryRequest):
+    """Handle passenger query with destination context"""
+    
+    cache_key = query_cache.generate_key(request.destination, request.query)
+    cached_response = query_cache.get(cache_key)
+    
+    if cached_response:
+        ts = datetime.now().isoformat()
+        print(f"[handle_query] cache hit - returning timestamp: {ts}")
+        return {
+            "answer": cached_response,
+            "destination": request.destination,
+            "from_cache": True,
+            "timestamp": ts
+        }
+    
+    context_prompt = build_context_from_chroma(request.destination, top_k=3)
+
+    # If there is no Chroma context, try a fallback contextual lookup using the user query
+    if not context_prompt and chroma_manager:
+        try:
+            kb_docs = chroma_manager.query(request.query, top_k=3)
+            if kb_docs:
+                kb_lines = [f"- {d}" for d in kb_docs]
+                kb_section = "\n\nKNOWLEDGE BASE:\n" + "\n\n".join(kb_lines)
+                context_prompt = f"You are a helpful travel assistant.\n\n{kb_section}\n\nPASSENGER MESSAGE:\n"
+        except Exception as e:
+            print(f"KB lookup failed: {e}")
+
+    if not context_prompt:
+        raise HTTPException(status_code=400, detail=f"No knowledge base entries found for '{request.destination}' and no fallback available.")
+
+    full_prompt = f"{context_prompt}\n\n{request.query}\n\nAnswer:"
+    
+    print(f"🤖 Querying for: {request.query[:50]}...")
+    try:
+        print(f"[handle_query] sending prompt (truncated 2000 chars):\n{full_prompt}")
+    except Exception:
+        pass
+    answer = await Llama.generate_response(full_prompt)
+    
+    query_cache.set(cache_key, answer)
+    # Database logging disabled: using pre-populated DB only (no new records)
+    
+    ts = datetime.now().isoformat()
+    print(f"[handle_query] model response - returning timestamp: {ts}")
+    return {
+        "answer": answer,
+        "destination": request.destination,
+        "from_cache": False,
+        "timestamp": ts
+    }
+
+
+@app.post("/api/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """Receive comfort feedback"""
+    try:
+        # Feedback logging disabled: operating on pre-populated DB only (no new records)
+        return {
+            "status": "success",
+            "message": "Feedback received (not logged)",
+            "seatNumber": request.seatNumber
+        }
+    except Exception as e:
+        print(f"Error logging feedback: {e}")
+        # If DB access fails, still return success because writes are intentionally disabled
+        return {
+            "status": "success",
+            "message": "Feedback received (not logged)",
+            "seatNumber": request.seatNumber
+        }
+
+
+@app.post("/api/crew-request")
+async def crew_request(request: QueryRequest):
+    """Passenger requests crew assistance"""
+    try:
+        # Crew-request logging disabled: using pre-populated DB only (no new records)
+        return {
+            "status": "success",
+            "message": "Crew request submitted (not logged)",
+            "seatNumber": request.seatNumber
+        }
+    except Exception as e:
+        # Writes are intentionally disabled; respond with success
+        return {
+            "status": "success",
+            "message": "Crew request submitted (not logged)",
+            "seatNumber": request.seatNumber
+        }
+
+
+@app.get("/api/stats")
+async def get_statistics():
+    """Get system statistics"""
+    try:
+        db = await aiosqlite.connect(DB_FILE)
+        
+        cursor = await db.execute("SELECT COUNT(*) FROM passengerQueries")
+        total_queries = (await cursor.fetchone())[0]
+        
+        cursor = await db.execute("SELECT COUNT(*) FROM comfortFeedback")
+        total_feedback = (await cursor.fetchone())[0]
+        
+        await db.close()
+        
+        return {
+            "total_queries": total_queries,
+            "total_feedback_submissions": total_feedback,
+            "model": MODEL_NAME,
+            "cache_size": len(query_cache.cache),
+            "chroma_available": chroma_manager is not None
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+# RUN THE SERVER
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "travel_assistant:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )

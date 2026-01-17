@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+aiosqlite
+ollama
+pydantic
+python-dotenv
+requests
+chromadb
+sentence-transformers
+pandas
+tqdm
+numpy

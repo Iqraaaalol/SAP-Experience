@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aircraft Travel Assistant</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        :root {
+            --color-primary: #0ea5e9;
+            --color-primary-dark: #0284c7;
+            --color-success: #10b981;
+            --color-error: #ef4444;
+            --color-warning: #f59e0b;
+            --color-bg: #0f172a;
+            --color-surface: #1e293b;
+            --color-border: #334155;
+            --color-text: #e2e8f0;
+            --color-text-secondary: #cbd5e1;
+            --spacing-xs: 4px;
+            --spacing-sm: 8px;
+            --spacing-md: 16px;
+            --spacing-lg: 24px;
+            --spacing-xl: 32px;
+            --radius: 8px;
+            --transition: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            height: 100%;
+            width: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        body {
+            background: var(--color-bg);
+            color: var(--color-text);
+            line-height: 1.6;
+        }
+
+        #root {
+            height: 100%;
+            width: 100%;
+        }
+
+        /* Layout */
+        .app-container {
+            display: flex;
+            height: 100vh;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        }
+
+        .sidebar {
+            width: 300px;
+            background: var(--color-surface);
+            border-right: 1px solid var(--color-border);
+            overflow-y: auto;
+            padding: var(--spacing-lg);
+            box-shadow: 2px 0 8px rgba(0,0,0,0.2);
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(90deg, #0ea5e9 0%, #06b6d4 100%);
+            padding: var(--spacing-lg);
+            border-bottom: 1px solid var(--color-border);
+            box-shadow: 0 2px 8px rgba(14, 165, 233, 0.15);
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+        }
+
+        .header-icon {
+            font-size: 28px;
+        }
+
+        .content-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: var(--spacing-xl);
+        }
+
+        /* Typography */
+        h2 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: var(--spacing-md);
+            color: var(--color-text);
+        }
+
+        h3 {
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: var(--spacing-sm);
+            color: var(--color-text);
+        }
+
+        p {
+            margin-bottom: var(--spacing-md);
+            color: var(--color-text-secondary);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: var(--spacing-sm) var(--spacing-md);
+            border: none;
+            border-radius: var(--radius);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: var(--spacing-sm);
+            white-space: nowrap;
+        }
+
+        .btn-primary {
+            background: var(--color-primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--color-primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: var(--color-surface);
+            color: var(--color-text);
+            border: 1px solid var(--color-border);
+        }
+
+        .btn-secondary:hover {
+            background: #334155;
+            border-color: var(--color-primary);
+        }
+
+        .btn-small {
+            padding: var(--spacing-xs) var(--spacing-sm);
+            font-size: 12px;
+        }
+
+        .btn-success {
+            background: var(--color-success);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        .btn-error {
+            background: var(--color-error);
+            color: white;
+        }
+
+        .btn-error:hover {
+            background: #dc2626;
+        }
+
+        .btn-full {
+            width: 100%;
+        }
+
+        /* Forms */
+        .form-group {
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: var(--spacing-sm);
+            font-weight: 500;
+            font-size: 14px;
+            color: var(--color-text);
+        }
+
+        .form-input,
+        .form-select,
+        .form-textarea {
+            width: 100%;
+            padding: var(--spacing-sm) var(--spacing-md);
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius);
+            color: var(--color-text);
+            font-size: 14px;
+            font-family: inherit;
+            transition: all var(--transition);
+        }
+
+        .form-input:focus,
+        .form-select:focus,
+        .form-textarea:focus {
+            outline: none;
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+        }
+
+        .form-textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius);
+            padding: var(--spacing-lg);
+            margin-bottom: var(--spacing-lg);
+            transition: all var(--transition);
+        }
+
+        .card:hover {
+            border-color: var(--color-primary);
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.1);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: var(--spacing-md);
+            padding-bottom: var(--spacing-md);
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--color-text);
+        }
+
+        .card-meta {
+            font-size: 12px;
+            color: var(--color-text-secondary);
+        }
+
+        /* Lists */
+        .destination-list {
+            list-style: none;
+        }
+
+        .destination-item {
+            padding: var(--spacing-md);
+            background: rgba(14, 165, 233, 0.1);
+            border-left: 3px solid var(--color-primary);
+            margin-bottom: var(--spacing-sm);
+            border-radius: 0 var(--radius) var(--radius) 0;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .destination-item:hover {
+            background: rgba(14, 165, 233, 0.2);
+            transform: translateX(4px);
+        }
+
+        .destination-item.active {
+            background: rgba(14, 165, 233, 0.3);
+            border-left-color: #06b6d4;
+        }
+
+        .destination-item-name {
+            font-weight: 500;
+            color: var(--color-text);
+            display: block;
+        }
+
+        .destination-item-country {
+            font-size: 12px;
+            color: var(--color-text-secondary);
+            margin-top: var(--spacing-xs);
+        }
+
+        /* Messages */
+        .message {
+            padding: var(--spacing-md);
+            border-radius: var(--radius);
+            margin-bottom: var(--spacing-md);
+            display: flex;
+            align-items: flex-start;
+            gap: var(--spacing-md);
+            animation: slideIn var(--transition);
+        }
+
+        .message-icon {
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+
+        .message-success {
+            background: rgba(16, 185, 129, 0.2);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            color: #6ee7b7;
+        }
+
+        .message-error {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            color: #fca5a5;
+        }
+
+        .message-info {
+            background: rgba(14, 165, 233, 0.2);
+            border: 1px solid rgba(14, 165, 233, 0.4);
+            color: #7dd3fc;
+        }
+
+        .message-warning {
+            background: rgba(245, 158, 11, 0.2);
+            border: 1px solid rgba(245, 158, 11, 0.4);
+            color: #fde68a;
+        }
+
+        /* Loading & States */
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(14, 165, 233, 0.2);
+            border-top-color: var(--color-primary);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .skeleton {
+            background: linear-gradient(90deg, var(--color-surface) 25%, #334155 50%, var(--color-surface) 75%);
+            background-size: 200% 100%;
+            animation: skeleton-loading 1.5s infinite;
+            border-radius: var(--radius);
+        }
+
+        @keyframes skeleton-loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: var(--spacing-xl);
+            color: var(--color-text-secondary);
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: var(--spacing-md);
+            opacity: 0.5;
+        }
+
+        /* Modal */
+        .modal-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: fadeIn var(--transition);
+        }
+
+        .modal {
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius);
+            padding: var(--spacing-xl);
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 25px rgba(0, 0, 0, 0.3);
+            animation: slideUp var(--transition);
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 0;
+                transform: translateY(0);
+            }
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--color-border);
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .tab-button {
+            padding: var(--spacing-md) var(--spacing-lg);
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--color-text-secondary);
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all var(--transition);
+        }
+
+        .tab-button.active {
+            color: var(--color-primary);
+            border-bottom-color: var(--color-primary);
+        }
+
+        .tab-button:hover {
+            color: var(--color-text);
+        }
+
+        /* Images */
+        .image-gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: var(--spacing-md);
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .image-card {
+            border-radius: var(--radius);
+            overflow: hidden;
+            border: 1px solid var(--color-border);
+            background: var(--color-surface);
+            transition: all var(--transition);
+        }
+
+        .image-card:hover {
+            border-color: var(--color-primary);
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(14, 165, 233, 0.2);
+        }
+
+        .image-card img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            display: block;
+        }
+
+        .image-card-footer {
+            padding: var(--spacing-md);
+            font-size: 12px;
+            color: var(--color-text-secondary);
+        }
+
+        /* Stats */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: var(--spacing-md);
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, rgba(14, 165, 233, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius);
+            padding: var(--spacing-lg);
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--color-primary);
+            margin-bottom: var(--spacing-sm);
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--color-text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .app-container {
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                border-right: none;
+                border-bottom: 1px solid var(--color-border);
+                max-height: 200px;
+                overflow-x: auto;
+                display: flex;
+                gap: var(--spacing-md);
+                padding: var(--spacing-md);
+            }
+
+            .destination-list {
+                display: flex;
+                gap: var(--spacing-md);
+            }
+
+            .destination-item {
+                border-left: none;
+                border-bottom: 3px solid transparent;
+                border-radius: var(--radius);
+                flex-shrink: 0;
+                min-width: 150px;
+            }
+
+            .destination-item.active {
+                border-bottom-color: var(--color-primary);
+                border-left: none;
+            }
+
+            .image-gallery {
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            }
+
+            .header h1 {
+                font-size: 20px;
+            }
+
+            .content-area {
+                padding: var(--spacing-md);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        const API_BASE_URL = 'http://127.0.0.1:8000/api';
+
+        // API Service
+        const apiService = {
+            async healthCheck() {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/health`);
+                    return await response.json();
+                } catch (error) {
+                    console.error('Health check failed:', error);
+                    throw error;
+                }
+            },
+
+            async listDestinations() {
+                const response = await fetch(`${API_BASE_URL}/destinations`);
+                return await response.json();
+            },
+
+            async getDestinationDetails(destination) {
+                const response = await fetch(`${API_BASE_URL}/destinations/${destination}`);
+                if (!response.ok) throw new Error('Destination not found');
+                return await response.json();
+            },
+
+            async submitQuery(queryData) {
+                const response = await fetch(`${API_BASE_URL}/query`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(queryData)
+                });
+                return await response.json();
+            },
+
+            async submitFeedback(feedbackData) {
+                const response = await fetch(`${API_BASE_URL}/feedback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(feedbackData)
+                });
+                return await response.json();
+            },
+
+            async crewRequest(requestData) {
+                const response = await fetch(`${API_BASE_URL}/crew-request`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestData)
+                });
+                return await response.json();
+            },
+
+            async getStats() {
+                const response = await fetch(`${API_BASE_URL}/stats`);
+                return await response.json();
+            }
+        };
+
+        // Message Component
+        function Message({ type, icon, text, onClose }) {
+            useEffect(() => {
+                const timer = setTimeout(onClose, 4000);
+                return () => clearTimeout(timer);
+            }, [onClose]);
+
+            return (
+                <div className={`message message-${type}`}>
+                    <span className="message-icon">{icon}</span>
+                    <div>{text}</div>
+                </div>
+            );
+        }
+
+        // Safe timestamp formatter — returns a readable time or an em dash if invalid
+        function formatTimestamp(ts) {
+            if (!ts) return '—';
+            const d = new Date(ts);
+            if (Number.isNaN(d.getTime())) return '—';
+            return d.toLocaleTimeString();
+        }
+
+        // Query Panel Component — now accepts a manual destination input since server-side list was removed
+        function QueryPanel({ selectedDestination, onQuerySubmit, isLoading }) {
+            const [query, setQuery] = useState('');
+            const [seatNumber, setSeatNumber] = useState('12A');
+            const [language, setLanguage] = useState('en');
+            const [destinationInput, setDestinationInput] = useState(selectedDestination || '');
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!query.trim()) return;
+
+                const destination = (selectedDestination || destinationInput || '').trim();
+                if (!destination) return;
+
+                await onQuerySubmit({
+                    query,
+                    destination: destination.toLowerCase(),
+                    seatNumber,
+                    language
+                });
+
+                setQuery('');
+            };
+
+            return (
+                <div className="card">
+                    <h3>✈️ Ask About This Destination</h3>
+                    <form onSubmit={handleSubmit}>
+                        <div className="form-group">
+                            <label className="form-label">Destination</label>
+                            <input
+                                type="text"
+                                className="form-input"
+                                value={destinationInput}
+                                onChange={(e) => setDestinationInput(e.target.value)}
+                                placeholder="e.g., paris, tokyo"
+                            />
+                        </div>
+
+                        <div className="form-group">
+                            <label className="form-label">Your Seat Number</label>
+                            <input
+                                type="text"
+                                className="form-input"
+                                value={seatNumber}
+                                onChange={(e) => setSeatNumber(e.target.value)}
+                                placeholder="e.g., 12A"
+                            />
+                        </div>
+
+                        <div className="form-group">
+                            <label className="form-label">Language Preference</label>
+                            <select
+                                className="form-select"
+                                value={language}
+                                onChange={(e) => setLanguage(e.target.value)}
+                            >
+                                <option value="en">English</option>
+                                <option value="es">Spanish</option>
+                                <option value="fr">French</option>
+                                <option value="de">German</option>
+                            </select>
+                        </div>
+
+                        <div className="form-group">
+                            <label className="form-label">Your Question</label>
+                            <textarea
+                                className="form-textarea"
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="What would you like to know about this destination?"
+                            />
+                        </div>
+
+                        <button
+                            type="submit"
+                            className="btn btn-primary btn-full"
+                            disabled={!(selectedDestination || destinationInput) || !query.trim() || isLoading}
+                        >
+                            {isLoading ? (
+                                <>
+                                    <div className="loading"></div> Generating Response...
+                                </>
+                            ) : (
+                                '🔍 Get Information'
+                            )}
+                        </button>
+                    </form>
+                </div>
+            );
+        }
+
+        // Response Display Component
+        function ResponseDisplay({ response, isLoading }) {
+            if (isLoading) {
+                return (
+                    <div className="card">
+                        <div className="skeleton" style={{ height: '200px' }}></div>
+                    </div>
+                );
+            }
+
+            if (!response) return null;
+
+            return (
+                <div className="card">
+                    <div className="card-header">
+                        <span className="card-title">📍 Response</span>
+                        <span className="card-meta">{formatTimestamp(response.timestamp)}</span>
+                    </div>
+
+                    <p style={{ marginBottom: 'var(--spacing-lg)' }}>{response.answer}</p>
+
+                    {response.from_cache && (
+                        <div className="message message-info">
+                            <span className="message-icon">⚡</span>
+                            <div>Cached response</div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Feedback Component
+        function FeedbackPanel({ selectedDestination }) {
+            const [seatNumber, setSeatNumber] = useState('12A');
+            const [temperature, setTemperature] = useState(5);
+            const [lighting, setLighting] = useState(5);
+            const [noiseLevel, setNoiseLevel] = useState(5);
+            const [comfort, setComfort] = useState('satisfied');
+            const [submitted, setSubmitted] = useState(false);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                try {
+                    await apiService.submitFeedback({
+                        seatNumber,
+                        temperature: parseFloat(temperature),
+                        lighting: parseFloat(lighting),
+                        noise_level: parseFloat(noiseLevel),
+                        overall_comfort: comfort
+                    });
+                    setSubmitted(true);
+                    setTimeout(() => setSubmitted(false), 3000);
+                } catch (error) {
+                    console.error('Feedback submission failed:', error);
+                }
+            };
+
+            return (
+                <div className="card">
+                    <h3>😊 Share Your Comfort Feedback</h3>
+                    {submitted && (
+                        <Message
+                            type="success"
+                            icon="✓"
+                            text="Thank you for your feedback!"
+                            onClose={() => setSubmitted(false)}
+                        />
+                    )}
+                    <form onSubmit={handleSubmit}>
+                        <div className="form-group">
+                            <label className="form-label">Seat Number</label>
+                            <input
+                                type="text"
+                                className="form-input"
+                                value={seatNumber}
+                                onChange={(e) => setSeatNumber(e.target.value)}
+                            />
+                        </div>
+
+                        <div className="form-group">
+                            <label className="form-label">Temperature: {temperature}°C</label>
+                            <input
+                                type="range"
+                                className="form-input"
+                                min="16"
+                                max="28"
+                                value={temperature}
+                                onChange={(e) => setTemperature(e.target.value)}
+                            />
+                        </div>
+
+                        <div className="form-group">
+                            <label className="form-label">Lighting: {lighting}/10</label>
+                            <input
+                                type="range"
+                                className="form-input"
+                                min="1"
+                                max="10"
+                                value={lighting}
+                                onChange={(e) => setLighting(e.target.value)}
+                            />
+                        </div>
+
+                        <div className="form-group">
+                            <label className="form-label">Noise Level: {noiseLevel}/10</label>
+                            <input
+                                type="range"
+                                className="form-input"
+                                min="1"
+                                max="10"
+                                value={noiseLevel}
+                                onChange={(e) => setNoiseLevel(e.target.value)}
+                            />
+                        </div>
+
+                        <div className="form-group">
+                            <label className="form-label">Overall Comfort</label>
+                            <select
+                                className="form-select"
+                                value={comfort}
+                                onChange={(e) => setComfort(e.target.value)}
+                            >
+                                <option value="very_satisfied">Very Satisfied</option>
+                                <option value="satisfied">Satisfied</option>
+                                <option value="neutral">Neutral</option>
+                                <option value="dissatisfied">Dissatisfied</option>
+                                <option value="very_dissatisfied">Very Dissatisfied</option>
+                            </select>
+                        </div>
+
+                        <button type="submit" className="btn btn-success btn-full">
+                            📊 Submit Feedback
+                        </button>
+                    </form>
+                </div>
+            );
+        }
+
+        // Main App Component
+        function TravelAssistantApp() {
+            const [destinations, setDestinations] = useState([]);
+            const [selectedDestination, setSelectedDestination] = useState(null);
+            const [response, setResponse] = useState(null);
+            const [isLoading, setIsLoading] = useState(false);
+            const [isLoadingDestinations, setIsLoadingDestinations] = useState(true);
+            const [messages, setMessages] = useState([]);
+            const [activeTab, setActiveTab] = useState('query');
+            const [stats, setStats] = useState(null);
+            const contentRef = useRef(null);
+
+            // Initialize health/stats on mount — destinations are entered manually now
+            useEffect(() => {
+                const init = async () => {
+                    try {
+                        await apiService.healthCheck();
+                        const statsData = await apiService.getStats();
+                        setStats(statsData);
+                        // We no longer load a server-side destinations list; users type destinations.
+                    } catch (error) {
+                        addMessage('error', '❌', 'Failed to connect to backend. Is the server running?');
+                    } finally {
+                        setIsLoadingDestinations(false);
+                    }
+                };
+                init();
+            }, []);
+
+            const addMessage = useCallback((type, icon, text) => {
+                const id = Date.now();
+                setMessages(prev => [...prev, { id, type, icon, text }]);
+            }, []);
+
+            const removeMessage = useCallback((id) => {
+                setMessages(prev => prev.filter(m => m.id !== id));
+            }, []);
+
+            const handleQuerySubmit = async (queryData) => {
+                setIsLoading(true);
+                try {
+                    const result = await apiService.submitQuery(queryData);
+                    setResponse(result);
+                    addMessage('success', '✓', 'Response generated successfully!');
+                    if (contentRef.current) {
+                        contentRef.current.scrollTop = contentRef.current.scrollHeight;
+                    }
+                } catch (error) {
+                    addMessage('error', '❌', 'Failed to get response: ' + error.message);
+                }
+                setIsLoading(false);
+            };
+
+            return (
+                <div className="app-container">
+                    {/* Sidebar - now shows KB status and stats; destinations are entered manually */}
+                    <div className="sidebar">
+                        <h2 style={{ marginTop: 0, marginBottom: 'var(--spacing-md)' }}>🔎 Knowledge</h2>
+                        {isLoadingDestinations ? (
+                            <div className="skeleton" style={{ height: '150px' }}></div>
+                        ) : (
+                            <div>
+                                <div className="card">
+                                    <h3>Knowledge Base</h3>
+                                    <p style={{ color: 'var(--color-text-secondary)' }}>
+                                        Chroma available: {stats?.chroma_available ? 'Yes' : 'No'}
+                                    </p>
+                                    <p style={{ color: 'var(--color-text-secondary)' }}>Model: {stats?.model}</p>
+                                    <p style={{ color: 'var(--color-text-secondary)' }}>Cached: {stats?.cache_size}</p>
+                                </div>
+                                <div className="card">
+                                    <h3>Quick Start</h3>
+                                    <p style={{ color: 'var(--color-text-secondary)' }}>Type a destination in the query panel (e.g., "paris") and ask your question.</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Main Content */}
+                    <div className="main-content">
+                        {/* Header */}
+                        <div className="header">
+                            <h1>
+                                <span className="header-icon">✈️</span>
+                                Aircraft Travel Assistant
+                            </h1>
+                        </div>
+
+                        {/* Stats */}
+                        {stats && (
+                            <div style={{ padding: 'var(--spacing-lg)', background: 'rgba(0,0,0,0.2)', borderBottom: '1px solid var(--color-border)' }}>
+                                <div className="stats-grid">
+                                    <div className="stat-card">
+                                        <div className="stat-value">{stats.total_queries}</div>
+                                        <div className="stat-label">Total Queries</div>
+                                    </div>
+                                    <div className="stat-card">
+                                        <div className="stat-value">{stats.total_feedback_submissions}</div>
+                                        <div className="stat-label">Feedback Submissions</div>
+                                    </div>
+                                    <div className="stat-card">
+                                        <div className="stat-value">{stats.cache_size}</div>
+                                        <div className="stat-label">Cache Size</div>
+                                    </div>
+                                </div>
+                                <div style={{ marginTop: 'var(--spacing-md)' }}>
+                                    <div style={{ color: 'var(--color-text-secondary)' }}>Chroma available: {stats.chroma_available ? 'Yes' : 'No'}</div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Content Area */}
+                        <div className="content-area" ref={contentRef}>
+                            {/* Messages */}
+                            {messages.map(msg => (
+                                <Message
+                                    key={msg.id}
+                                    type={msg.type}
+                                    icon={msg.icon}
+                                    text={msg.text}
+                                    onClose={() => removeMessage(msg.id)}
+                                />
+                            ))}
+
+                            {/* Tabs */}
+                            <div className="tabs">
+                                <button
+                                    className={`tab-button ${activeTab === 'query' ? 'active' : ''}`}
+                                    onClick={() => setActiveTab('query')}
+                                >
+                                    💬 Ask Travel Guide
+                                </button>
+                                <button
+                                    className={`tab-button ${activeTab === 'feedback' ? 'active' : ''}`}
+                                    onClick={() => setActiveTab('feedback')}
+                                >
+                                    😊 Comfort Feedback
+                                </button>
+                            </div>
+
+                            {/* Tab Content */}
+                            {activeTab === 'query' && (
+                                <>
+                                    <QueryPanel
+                                        selectedDestination={selectedDestination}
+                                        onQuerySubmit={handleQuerySubmit}
+                                        isLoading={isLoading}
+                                    />
+                                    <ResponseDisplay
+                                        response={response}
+                                        isLoading={isLoading}
+                                    />
+                                </>
+                            )}
+
+                            {activeTab === 'feedback' && (
+                                <FeedbackPanel
+                                    selectedDestination={selectedDestination}
+                                />
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Render app
+        ReactDOM.createRoot(document.getElementById('root')).render(<TravelAssistantApp />);
+    </script>
+</body>
+</html>
