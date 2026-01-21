@@ -1,6 +1,3 @@
-Before running the app, download the diddybludden dependencies:
-pip install -r requirements.txt 
-
 If previous step failed, create a new virtual environment and then do it:
 python -m venv venv
 venv\Scripts\activate
