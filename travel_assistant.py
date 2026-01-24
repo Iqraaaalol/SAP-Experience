@@ -1,10 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import json
+import re
 from datetime import datetime
 import aiosqlite
 import os
@@ -14,11 +15,12 @@ from ollama import Client
 from dotenv import load_dotenv
 from wikivoyage_chromadb_bot import ChromaDBManager
 from sentence_transformers import SentenceTransformer
+from typing import List, Dict, Optional
 
 load_dotenv()
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:1b")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://192.168.0.179:11434")
+MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:3b")
 DB_FILE = os.getenv("DB_FILE", "./data/aircraft.db")
 
 # Chroma config
@@ -45,6 +47,75 @@ class FeedbackRequest(BaseModel):
     overall_comfort: str
 
 
+class CrewAlertRequest(BaseModel):
+    seatNumber: str
+    serviceType: str
+    message: str
+    priority: str = "medium"
+
+
+class ConnectionManager:
+    """Manage WebSocket connections for crew dashboard"""
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"✅ Crew dashboard connected. Total connections: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        print(f"❌ Crew dashboard disconnected. Total connections: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict):
+        """Broadcast alert to all connected crew dashboards"""
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                print(f"Error sending to connection: {e}")
+                disconnected.append(connection)
+        
+        for conn in disconnected:
+            if conn in self.active_connections:
+                self.active_connections.remove(conn)
+
+
+crew_manager = ConnectionManager()
+
+
+def detect_service_request(query: str) -> Optional[Dict[str, str]]:
+    """Detect if user is requesting in-flight services using pattern matching"""
+    query_lower = query.lower()
+    
+    service_patterns = {
+        'beverage': r'(water|drink|beverage|coffee|tea|juice|soda|wine|beer|alcohol|cocktail|champagne|thirsty)',
+        'food': r'(food|meal|snack|hungry|eat|breakfast|lunch|dinner|sandwich|salad)',
+        'blanket': r'(blanket|cold|freezing|chilly|cover)',
+        'pillow': r'(pillow|cushion|headrest)',
+        'assistance': r'(help me|assist me|call.*(attendant|crew)|emergency)',
+        'medical': r'(sick|ill|medicine|pain|doctor|medical|nausea|headache|not feeling well)',
+        'entertainment': r'(movie|music|headphone|entertainment|wifi|internet)',
+    }
+    
+    for service_type, pattern in service_patterns.items():
+        if re.search(pattern, query_lower):
+            priority = 'high' if service_type == 'medical' else 'medium'
+            if service_type in ['entertainment']:
+                priority = 'low'
+            
+            return {
+                'serviceType': service_type,
+                'priority': priority,
+                'message': query
+            }
+    
+    return None
+
+
 def build_context_from_chroma(destination: str, top_k: int = 5) -> str:
     """Build a model prompt using Chroma KB as the primary source."""
     if not chroma_manager:
@@ -68,13 +139,22 @@ def build_context_from_chroma(destination: str, top_k: int = 5) -> str:
         You are a helpful travel assistant on an aircraft providing accurate destination information to passengers.
 
         IMPORTANT INSTRUCTIONS:
-        - If query is not related to the destination, politely inform the passenger that you can only assist with destination-related questions.
+        - If query is not related to travel, culture, language, destination, politely inform the passenger that you can only assist with travel-related questions.
         - Only provide information that is FACTUALLY ACCURATE
         - If you're unsure about specific details (addresses, prices, opening hours), say "I don't have specific details, but..."
         - Do NOT make up business names, addresses, or locations
         - For activities like skydiving, mention general areas or nearby cities rather than specific made-up venues
         - Always distinguish between general information and specific recommendations
         - If asked about specific services, provide general guidance rather than inventing locations
+
+        FORMATTING INSTRUCTIONS:
+        - Use **bold** for emphasis on key points
+        - Use bullet points (- or *) for lists
+        - Use numbered lists (1. 2. 3.) for sequential information
+        - Use headers (## or ###) for section titles
+        - Add line breaks between paragraphs for readability
+        - Use > for important notes or tips
+        - Format your response in Markdown for better readability
 
         {kb_section}
 
@@ -310,6 +390,28 @@ async def health_check():
 async def handle_query(request: QueryRequest):
     """Handle passenger query with destination context"""
     
+    # First, check if this is a service request
+    service_request = detect_service_request(request.query)
+    if service_request:
+        alert = {
+            'seatNumber': request.seatNumber,
+            'serviceType': service_request['serviceType'],
+            'message': service_request['message'],
+            'priority': service_request['priority'],
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        await crew_manager.broadcast(alert)
+        print(f"🚨 Service request detected: {service_request['serviceType']} from seat {request.seatNumber}")
+        
+        return {
+            "answer": f"I've notified the cabin crew about your **{service_request['serviceType']}** request. A flight attendant will assist you at seat **{request.seatNumber}** shortly.\n\n> ✅ Your request has been sent to the crew dashboard.",
+            "destination": request.destination,
+            "from_cache": False,
+            "service_alert_sent": True,
+            "timestamp": datetime.now().isoformat()
+        }
+    
     cache_key = query_cache.generate_key(request.destination, request.query)
     cached_response = query_cache.get(cache_key)
     
@@ -398,6 +500,33 @@ async def get_statistics():
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.websocket("/ws/crew")
+async def crew_websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for crew dashboard"""
+    await crew_manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_text(data)
+    except WebSocketDisconnect:
+        crew_manager.disconnect(websocket)
+
+
+@app.post("/api/crew/acknowledge")
+async def acknowledge_crew_alert(request: dict):
+    """Acknowledge a crew alert"""
+    return {"status": "success", "message": "Alert acknowledged"}
+
+
+@app.get("/crew-dashboard")
+async def crew_dashboard():
+    """Serve crew dashboard HTML"""
+    dashboard_path = os.path.join(STATIC_DIR, "crew-dashboard.html")
+    if os.path.exists(dashboard_path):
+        return FileResponse(dashboard_path)
+    return {"message": "Crew dashboard not found. Create crew-dashboard.html in static directory"}
 
 
 if __name__ == "__main__":

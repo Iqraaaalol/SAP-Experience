@@ -2,10 +2,24 @@ import cv2
 import torch
 from facenet_pytorch import MTCNN
 from deepface import DeepFace
+from torchvision import transforms, models
+import torch.nn as nn
+from PIL import Image
+import os
 import time
 import numpy as np
 import tempfile
 import argparse
+
+# Try to import config locally
+try:
+    import config
+except ImportError:
+    # If config not found (e.g. run from different dir), define defaults or rely on fallback
+    class Config:
+        DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        INPUT_SIZE = (300, 300)
+    config = Config()
 
 class EmotionDetector:
     def __init__(self):
@@ -59,8 +73,84 @@ class EmotionDetector:
             except:
                 pass
 
+class EfficientNetEmotionDetector:
+    def __init__(self, model_path="checkpoints/best_efficientnet_b3.pth", num_classes=config.NUM_CLASSES, class_names=None):
+        self.device = config.DEVICE
+        base_colors = {
+            'angry': (0, 0, 255),       # Red
+            'disgust': (0, 128, 0),     # Dark green
+            'fear': (128, 0, 128),      # Purple
+            'happy': (0, 255, 0),       # Green
+            'neutral': (255, 255, 0),   # Cyan
+            'sad': (255, 0, 0),         # Blue
+            'surprise': (255, 0, 255)   # Magenta
+        }
+        self.emotion_colors = base_colors
+        
+        # Default fallback if checkpoint doesn't have names
+        self.class_names = class_names if class_names else config.CLASS_NAMES
+        self.model = self._load_model(model_path, num_classes)
+        
+        self.transform = transforms.Compose([
+            transforms.Resize(config.INPUT_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+    def _load_model(self, model_path, num_classes):
+        print(f"Loading EfficientNet-B3 from {model_path}...")
+        try:
+            from torchvision.models import EfficientNet_B3_Weights
+            model = models.efficientnet_b3(weights=None)
+        except ImportError:
+            model = models.efficientnet_b3(pretrained=False)
+            
+        # Re-create classifier head
+        in_features = model.classifier[1].in_features
+        model.classifier[1] = nn.Linear(in_features, num_classes)
+        
+        if os.path.exists(model_path):
+            checkpoint = torch.load(model_path, map_location=self.device)
+            # handle if 'model_state_dict' is key or direct state dict
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                if 'class_names' in checkpoint:
+                    self.class_names = checkpoint['class_names'] 
+            else:
+                model.load_state_dict(checkpoint)
+            print("Custom model loaded successfully.")
+        else:
+            print(f"Warning: Model checkpoint {model_path} not found. Using random weights.")
+            
+        model.to(self.device)
+        model.eval()
+        return model
+
+    def detect_emotion(self, face_image):
+        if face_image is None or face_image.size == 0:
+             return 'neutral', 0.0, {}
+             
+        # Convert BGR (OpenCV) to RGB (PIL/Torch)
+        rgb_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb_face)
+        
+        img_tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.model(img_tensor)
+            probs = torch.nn.functional.softmax(outputs, dim=1)
+            conf, pred_idx = torch.max(probs, 1)
+            
+        dominant_emotion = self.class_names[pred_idx.item()]
+        confidence = conf.item()
+        
+        # Format similar to DeepFace return for compatibility
+        emotion_dict = {name: probs[0][i].item() * 100 for i, name in enumerate(self.class_names)}
+        
+        return dominant_emotion, confidence, emotion_dict
+
 class EnhancedFaceDetector:
-    def __init__(self):
+    def __init__(self, model_type='deepface'):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {device}")
         
@@ -71,7 +161,11 @@ class EnhancedFaceDetector:
             post_process=False  
         )
         
-        self.emotion_detector = EmotionDetector()
+        if model_type == 'efficientnet':
+            self.emotion_detector = EfficientNetEmotionDetector()
+        else:
+            self.emotion_detector = EmotionDetector()
+            
         self.fps_history = []
         self.face_history = {} 
         self.emotion_cache = {}  
@@ -182,9 +276,10 @@ class EnhancedFaceDetector:
 def main():
     parser = argparse.ArgumentParser(description='Enhanced Face Detection with Emotion Recognition')
     parser.add_argument('--video', type=str, default='0', help='Path to video file or camera index (default: 0 for camera)')
+    parser.add_argument('--model', type=str, default='deepface', choices=['deepface', 'efficientnet'], help='Emotion model to use')
     args = parser.parse_args()
     
-    detector = EnhancedFaceDetector()
+    detector = EnhancedFaceDetector(model_type=args.model)
 
     if args.video.isdigit():
         cap = cv2.VideoCapture(int(args.video))
