@@ -29,7 +29,7 @@ ollama serve
    curl http://YOUR_IP_HERE:11434/api/version
 
 To run the chatbot:
-python travel_assistant.py
+python run.py
 Then copy the local or netwrok access url found in terminal
 
 to run the mood detection on camera, run computer-vision\enhanced_face_detection.py 
