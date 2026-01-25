@@ -15,13 +15,15 @@ def load_trained_model(checkpoint_path, num_classes):
     """Loads the model architecture and weights from checkpoint."""
     # Re-initialize architecture
     try:
-        from torchvision.models import EfficientNet_B3_Weights
-        model = models.efficientnet_b3(weights=None) # No pretrained weights needed, loading custom
+        from torchvision.models import ConvNeXt_Base_Weights
+        model = models.convnext_base(weights=None) # No pretrained weights needed, loading custom
     except ImportError:
-        model = models.efficientnet_b3(pretrained=False)
-        
-    in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, num_classes)
+        model = models.convnext_base(pretrained=False)
+    
+    # ConvNeXt's classifier is Sequential: [LayerNorm, Flatten, Linear]
+    # The Linear layer is at index 2
+    in_features = model.classifier[2].in_features
+    model.classifier[2] = nn.Linear(in_features, num_classes)
     
     # Load weights
     if os.path.exists(checkpoint_path):
