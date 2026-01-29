@@ -186,3 +186,6 @@ destination_images
 wikivoyage_2025_12_01.xml
 chroma_db/
 data/
+checkponts/
+checkpoints/best_convnext_base.pth
+clip.mp4
