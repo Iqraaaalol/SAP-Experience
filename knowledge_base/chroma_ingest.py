@@ -1,5 +1,6 @@
 from wikivoyage_chromadb_bot import WikiVoyageProcessor, ChromaDBManager, TravelChatBot
 from dotenv import load_dotenv
+from pathlib import Path
 import os
 
 # Load env so CHROMA_PERSIST_DIR can be used
@@ -10,8 +11,9 @@ processor = WikiVoyageProcessor("wikivoyage_2025_12_01.xml")
 pages = processor.parse_xml()  # Extract destination pages
 chunks = processor.chunk_content()  # Create searchable chunks
 
-# Use CHROMA_PERSIST_DIR if set, otherwise default to 'chroma_db'
-persist_dir = os.getenv("CHROMA_PERSIST_DIR", "chroma_db")
+# Use CHROMA_PERSIST_DIR if set, otherwise default to knowledge_base/chroma_db
+default_persist_dir = str(Path(__file__).parent / "chroma_db")
+persist_dir = os.getenv("CHROMA_PERSIST_DIR", default_persist_dir)
 
 # Initialize knowledge base
 db = ChromaDBManager(persist_dir)

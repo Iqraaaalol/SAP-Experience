@@ -11,7 +11,6 @@ from .language import (
     LANGUAGE_NAMES, SERVICE_MESSAGES, 
     get_language_name, get_service_message, translate_to_english
 )
-from .service_detection import detect_service_request
 from .connections import ConnectionManager, crew_manager
 from .chroma_service import (
     ChromaManager, build_context_from_chroma, 
@@ -31,8 +30,6 @@ __all__ = [
     # Language
     'LANGUAGE_NAMES', 'SERVICE_MESSAGES',
     'get_language_name', 'get_service_message', 'translate_to_english',
-    # Service Detection
-    'detect_service_request',
     # Connections
     'ConnectionManager', 'crew_manager',
     # Chroma

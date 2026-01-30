@@ -1,7 +1,6 @@
 import cv2
 import torch
 from facenet_pytorch import MTCNN
-from deepface import DeepFace
 from torchvision import transforms, models
 import torch.nn as nn
 from PIL import Image
@@ -21,60 +20,8 @@ except ImportError:
         INPUT_SIZE = (300, 300)
     config = Config()
 
-class EmotionDetector:
-    def __init__(self):
-        self.emotion_colors = {
-            'happy': (0, 255, 0),      # Green
-            'neutral': (255, 255, 0),  # Cyan
-            'angry': (0, 0, 255),      # Red
-            'stressed': (0, 165, 255)  # Orange
-        }
-    
-    def detect_emotion(self, face_image):
-        try:
-            # Save face temporarily for mood analysis
-            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-                cv2.imwrite(tmp.name, face_image)
-                tmp_path = tmp.name
-            
-            result = DeepFace.analyze(
-                img_path=tmp_path,
-                actions=['emotion'],
-                enforce_detection=False,
-                detector_backend='opencv'
-            )
-            
-            if isinstance(result, list):
-                result = result[0]
-            
-            emotions = result['emotion']
-            
-            # Map to 3 classes
-            three_class = {
-                'happy': emotions.get('happy', 0),
-                'neutral': emotions.get('neutral', 0),
-                'stressed': emotions.get('fear', 0) + emotions.get('sad', 0) + emotions.get('disgust', 0) + emotions.get('angry', 0)
-            }
-            
-            dominant = max(three_class, key=three_class.get)
-            confidence = three_class[dominant] / 100.0
-            
-            return dominant, confidence, three_class
-            
-        except Exception as e:
-            print(f"Emotion detection error: {e}")
-            return 'neutral', 0.0, {}
-        finally:
-            # Clean up temp file
-            try:
-                import os
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except:
-                pass
-
-class EfficientNetEmotionDetector:
-    def __init__(self, model_path="checkpoints/best_efficientnet_b3.pth", num_classes=config.NUM_CLASSES, class_names=None):
+class ConvNeXtEmotionDetector:
+    def __init__(self, model_path="checkpoints/best_convnext_base.pth", num_classes=config.NUM_CLASSES, class_names=None):
         self.device = config.DEVICE
         base_colors = {
             'angry': (0, 0, 255),       # Red
@@ -97,17 +44,73 @@ class EfficientNetEmotionDetector:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
+        # Alignment settings
+        self.output_size = config.INPUT_SIZE  # (224, 224)
+        self.desired_left_eye = (0.35, 0.35)  # Left eye position in normalized coords
+        
+    def align_face(self, image, landmarks):
+        """
+        Align face using eye landmarks via affine transformation.
+        
+        Args:
+            image: BGR image (numpy array)
+            landmarks: 5 facial landmarks [left_eye, right_eye, nose, left_mouth, right_mouth]
+        
+        Returns:
+            Aligned face image (numpy array)
+        """
+        if landmarks is None or len(landmarks) < 2:
+            return image
+            
+        # Extract eye coordinates (MTCNN order: left_eye, right_eye, nose, left_mouth, right_mouth)
+        left_eye = landmarks[0]
+        right_eye = landmarks[1]
+        
+        # Calculate angle between eyes
+        dY = right_eye[1] - left_eye[1]
+        dX = right_eye[0] - left_eye[0]
+        angle = np.degrees(np.arctan2(dY, dX))
+        
+        # Calculate the desired right eye position based on left eye
+        desired_right_eye_x = 1.0 - self.desired_left_eye[0]
+        
+        # Calculate distance between eyes
+        dist = np.sqrt((dX ** 2) + (dY ** 2))
+        
+        # Calculate desired distance between eyes in output image
+        desired_dist = (desired_right_eye_x - self.desired_left_eye[0]) * self.output_size[0]
+        
+        # Calculate scale factor
+        scale = desired_dist / dist if dist > 0 else 1.0
+        
+        # Calculate center point between eyes
+        eyes_center = ((left_eye[0] + right_eye[0]) / 2, (left_eye[1] + right_eye[1]) / 2)
+        
+        # Get rotation matrix
+        M = cv2.getRotationMatrix2D(eyes_center, angle, scale)
+        
+        # Update translation component of matrix
+        tX = self.output_size[0] * 0.5
+        tY = self.output_size[1] * self.desired_left_eye[1]
+        M[0, 2] += (tX - eyes_center[0])
+        M[1, 2] += (tY - eyes_center[1])
+        
+        # Apply affine transformation
+        aligned = cv2.warpAffine(image, M, self.output_size, flags=cv2.INTER_CUBIC)
+        
+        return aligned
+        
     def _load_model(self, model_path, num_classes):
-        print(f"Loading EfficientNet-B3 from {model_path}...")
+        print(f"Loading ConvNeXt-Base from {model_path}...")
         try:
-            from torchvision.models import EfficientNet_B3_Weights
-            model = models.efficientnet_b3(weights=None)
+            from torchvision.models import ConvNeXt_Base_Weights
+            model = models.convnext_base(weights=None)
         except ImportError:
-            model = models.efficientnet_b3(pretrained=False)
+            model = models.convnext_base(pretrained=False)
             
         # Re-create classifier head
-        in_features = model.classifier[1].in_features
-        model.classifier[1] = nn.Linear(in_features, num_classes)
+        in_features = model.classifier[2].in_features
+        model.classifier[2] = nn.Linear(in_features, num_classes)
         
         if os.path.exists(model_path):
             checkpoint = torch.load(model_path, map_location=self.device)
@@ -126,9 +129,23 @@ class EfficientNetEmotionDetector:
         model.eval()
         return model
 
-    def detect_emotion(self, face_image):
+    def detect_emotion(self, face_image, landmarks=None):
+        """
+        Detect emotion from face image.
+        
+        Args:
+            face_image: BGR face image (numpy array)
+            landmarks: Optional 5 facial landmarks for alignment
+        
+        Returns:
+            (dominant_emotion, confidence, emotion_dict)
+        """
         if face_image is None or face_image.size == 0:
              return 'neutral', 0.0, {}
+        
+        # Apply face alignment if landmarks provided
+        if landmarks is not None:
+            face_image = self.align_face(face_image, landmarks)
              
         # Convert BGR (OpenCV) to RGB (PIL/Torch)
         rgb_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
@@ -149,8 +166,8 @@ class EfficientNetEmotionDetector:
         
         return dominant_emotion, confidence, emotion_dict
 
-class EnhancedFaceDetector:
-    def __init__(self, model_type='deepface'):
+class FaceDetector:
+    def __init__(self):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {device}")
         
@@ -161,10 +178,7 @@ class EnhancedFaceDetector:
             post_process=False  
         )
         
-        if model_type == 'efficientnet':
-            self.emotion_detector = EfficientNetEmotionDetector()
-        else:
-            self.emotion_detector = EmotionDetector()
+        self.emotion_detector = ConvNeXtEmotionDetector()
             
         self.fps_history = []
         self.face_history = {} 
@@ -227,8 +241,15 @@ class EnhancedFaceDetector:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
             # Draw emotion if available
-            if emotions and i in emotions:
-                emotion, conf = emotions[i]
+            emotion_data = None
+            if emotions:
+                if isinstance(emotions, dict) and i in emotions:
+                    emotion_data = emotions[i]
+                elif isinstance(emotions, list) and i < len(emotions):
+                    emotion_data = emotions[i]
+            
+            if emotion_data:
+                emotion, conf = emotion_data
                 emotion_color = self.emotion_detector.emotion_colors.get(emotion, (255, 255, 255))
                 cv2.putText(frame, f"Emotion: {emotion.upper()} ({conf:.0%})", 
                            (x1, info_y + 80),
@@ -276,10 +297,9 @@ class EnhancedFaceDetector:
 def main():
     parser = argparse.ArgumentParser(description='Enhanced Face Detection with Emotion Recognition')
     parser.add_argument('--video', type=str, default='0', help='Path to video file or camera index (default: 0 for camera)')
-    parser.add_argument('--model', type=str, default='deepface', choices=['deepface', 'efficientnet'], help='Emotion model to use')
     args = parser.parse_args()
     
-    detector = EnhancedFaceDetector(model_type=args.model)
+    detector = FaceDetector()
 
     if args.video.isdigit():
         cap = cv2.VideoCapture(int(args.video))
@@ -290,8 +310,9 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
     screenshot_count = 0
-    emotion_update_interval = 0.5  
+    emotion_update_interval = 0.3  
     last_emotion_update = time.time()
+    cached_emotions = {}  # Persist emotions between frames
     
     print("=" * 50)
     print("Enhanced Face Detection with Emotion Recognition")
@@ -318,21 +339,58 @@ def main():
 
         boxes, probs, landmarks = detector.detect_faces(frame)
         
-        emotions = {}
-        current_time = time.time()
-        if boxes is not None and (current_time - last_emotion_update) > emotion_update_interval:
-            for i, box in enumerate(boxes):
-                x1, y1, x2, y2 = box.astype(int)
-                # Extract face region
-                face_img = frame[max(0, y1):min(frame.shape[0], y2), max(0, x1):min(frame.shape[1], x2)]
-                
-                if face_img.size > 0:
-                    emotion, conf, _ = detector.emotion_detector.detect_emotion(face_img)
-                    emotions[i] = (emotion, conf)
-            
-            last_emotion_update = current_time
+        # Helper to create stable face IDs based on position
+        def get_face_id(box):
+            cx = int((box[0] + box[2]) / 2 / 50) * 50
+            cy = int((box[1] + box[3]) / 2 / 50) * 50
+            return f"{cx}_{cy}"
         
-        frame = detector.draw_enhanced_boxes(frame, boxes, probs, landmarks, emotions)
+        emotions_list = []
+        current_time = time.time()
+        current_face_ids = set()
+        
+        if boxes is not None and len(boxes) > 0:
+            # Update emotions if interval passed
+            if (current_time - last_emotion_update) > emotion_update_interval:
+                for i, box in enumerate(boxes):
+                    x1, y1, x2, y2 = box.astype(int)
+                    # Extract face region
+                    face_img = frame[max(0, y1):min(frame.shape[0], y2), max(0, x1):min(frame.shape[1], x2)]
+                    
+                    # Get landmarks for this face (if available)
+                    face_landmarks = None
+                    if landmarks is not None and i < len(landmarks) and landmarks[i] is not None:
+                        # Adjust landmarks to be relative to face crop
+                        face_landmarks = landmarks[i].copy()
+                        face_landmarks[:, 0] -= x1  # Adjust x coordinates
+                        face_landmarks[:, 1] -= y1  # Adjust y coordinates
+                    
+                    if face_img.size > 0:
+                        emotion, conf, _ = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
+                        face_id = get_face_id(box)
+                        cached_emotions[face_id] = (emotion, conf)
+                        current_face_ids.add(face_id)
+                
+                last_emotion_update = current_time
+            else:
+                # Just track current face IDs without detecting
+                for box in boxes:
+                    current_face_ids.add(get_face_id(box))
+            
+            # Build emotions list from cache for each detected face
+            for box in boxes:
+                face_id = get_face_id(box)
+                if face_id in cached_emotions:
+                    emotions_list.append(cached_emotions[face_id])
+                else:
+                    emotions_list.append(None)
+            
+            # Clean up old faces no longer in frame
+            cached_emotions = {k: v for k, v in cached_emotions.items() if k in current_face_ids}
+        else:
+            cached_emotions.clear()
+        
+        frame = detector.draw_enhanced_boxes(frame, boxes, probs, landmarks, emotions_list)
         
         frame = detector.add_dashboard(frame, boxes, probs)
         

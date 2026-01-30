@@ -32,16 +32,69 @@ class ChromaManager:
             self.chroma_db = None
             self.collection = None
 
-    def query(self, query_text: str, top_k: int = 3) -> list:
-        """Return top_k documents (strings) relevant to the query_text."""
+    def query(self, query_text: str, top_k: int = 3, destination: str = None) -> list:
+        """Return top_k documents relevant to the query_text, optionally filtered by destination.
+        
+        Args:
+            query_text: The search query
+            top_k: Number of results to return
+            destination: Optional destination to filter results by title
+        """
         if not self.chroma_db:
             return []
         try:
+            # If destination provided, use filtered search
+            if destination:
+                return self._filtered_search(query_text, destination, top_k)
+            
+            # Otherwise use standard search
             search_results = self.chroma_db.search(query_text, n_results=top_k)
             return search_results
         except Exception as e:
             print(f"Chroma query error: {e}")
             return []
+    
+    def _filtered_search(self, query_text: str, destination: str, top_k: int = 3) -> list:
+        """Search with metadata filter for destination/title."""
+        if not self.chroma_db or not self.collection:
+            return []
+        
+        try:
+            # Generate query embedding
+            query_embedding = self.chroma_db.embedder.encode([query_text], convert_to_numpy=True)
+            
+            # Normalize destination for matching (capitalize first letter of each word)
+            destination_normalized = destination.strip().title()
+            
+            # Try exact title match first
+            results = self.collection.query(
+                query_embeddings=query_embedding,
+                n_results=top_k,
+                where={"title": {"$eq": destination_normalized}}
+            )
+            
+            # If no results with exact match, try without filter but include destination in query
+            if not results['documents'] or not results['documents'][0]:
+                print(f"No exact title match for '{destination_normalized}', falling back to semantic search")
+                combined_query = f"{destination} {query_text}"
+                return self.chroma_db.search(combined_query, n_results=top_k)
+            
+            # Format results to match expected structure
+            search_results = []
+            for i, doc in enumerate(results['documents'][0]):
+                search_results.append({
+                    'content': doc,
+                    'title': results['metadatas'][0][i]['title'],
+                    'source': results['metadatas'][0][i]['source'],
+                    'distance': results['distances'][0][i] if results['distances'] else None
+                })
+            
+            return search_results
+            
+        except Exception as e:
+            print(f"Filtered search error: {e}")
+            # Fallback to standard search
+            return self.chroma_db.search(f"{destination} {query_text}", n_results=top_k)
 
 
 def build_context_from_chroma(chroma_manager: ChromaManager, 
@@ -55,13 +108,13 @@ def build_context_from_chroma(chroma_manager: ChromaManager,
         return ""
 
     try:
-        # Use English query combined with destination for better semantic matching
-        search_text = f"{destination} {query_english}".strip() if query_english else destination
-        kb_docs = chroma_manager.query(search_text, top_k=top_k)
+        # Use filtered search with destination metadata for better relevance
+        kb_docs = chroma_manager.query(query_english or destination, top_k=top_k, destination=destination)
         
-        # Fallback to just destination if combined search returns nothing
-        if not kb_docs and query_english:
-            kb_docs = chroma_manager.query(destination, top_k=top_k)
+        # Fallback to unfiltered search if no results
+        if not kb_docs:
+            search_text = f"{destination} {query_english}".strip() if query_english else destination
+            kb_docs = chroma_manager.query(search_text, top_k=top_k)
         
         if not kb_docs:
             return ""
@@ -79,19 +132,19 @@ def build_context_from_chroma(chroma_manager: ChromaManager,
         language_name = LANGUAGE_NAMES.get(language, 'English')
 
         context = f"""
-        You are a helpful travel assistant on an aircraft providing accurate destination information to passengers.
+        You are Avia, a friendly and knowledgeable travel assistant aboard this flydubai aircraft in the air. You help passengers with destination information, travel tips, and cultural insights.
 
         CRITICAL LANGUAGE INSTRUCTION:
         - You MUST respond entirely in {language_name}.
         - All text, explanations, and formatting must be in {language_name}.
-        - Do not mix languages - use only {language_name} throughout your response.
+        - Do not mix languages - use only {language_name} throughout your response.S
+        - If passenger uses romanized {language_name}, respond in romanized {language_name} as well.
 
         CONVERSATION CONTINUITY:
         - You are having an ongoing conversation with this passenger.
         - IMPORTANT: Pay close attention to the conversation history below.
-        - If the passenger sends a short reply like "yes", "no", "sure", "tell me more", "that sounds good", etc., look at YOUR PREVIOUS RESPONSE to understand what they're responding to.
+        - If the passenger sends a short reply like "yes", "no", "sure", "tell me more", "that sounds good", etc., look at YOUR PREVIOUS RESPONSE to understand what they're responding to, particular the last sentence of your response.
         - Reference previous messages when relevant to provide continuity.
-        - Address them warmly as a returning conversationalist.
         {conversation_context}
 
         IMPORTANT INSTRUCTIONS:
