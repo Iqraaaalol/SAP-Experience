@@ -6,7 +6,6 @@ certifi==2026.1.4
 charset-normalizer==3.4.4
 click==8.3.1
 colorama==0.4.6
-deepface==0.0.97
 facenet-pytorch==2.6.0
 filelock==3.20.3
 fire==0.7.1
@@ -66,8 +65,8 @@ termcolor==3.3.0
 tf_keras==2.20.1
 --index-url https://download.pytorch.org/whl/cu128
 torch
-torchaudio
 torchvision
+torchaudio
 --index-url https://pypi.org/simple
 tqdm==4.67.1
 typing_extensions==4.15.0
