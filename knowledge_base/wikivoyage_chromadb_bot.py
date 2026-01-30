@@ -1,9 +1,14 @@
 import xml.etree.ElementTree as ET
 import re
+import os
 import chromadb
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
 from typing import List, Dict, Tuple
+
+# Enable offline mode for HuggingFace - use cached models only
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 class WikiVoyageProcessor:
     """Processes WikiVoyage XML dumps and extracts travel content"""

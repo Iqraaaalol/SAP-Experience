@@ -32,7 +32,6 @@ from services import (
     # Language
     get_language_name, get_service_message, translate_to_english,
     # Services
-    detect_service_request,
     crew_manager,
     build_context_from_chroma, init_chroma_manager, get_chroma_manager,
     init_llm,
@@ -56,7 +55,14 @@ async def lifespan(app: FastAPI):
     
     # Print network access info
     hostname = socket.gethostname()
-    local_ip = "192.168.0.113"
+    try:
+        # Get actual local IP by connecting to external address
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = "127.0.0.1"
     print(f"\n{'='*60}")
     print(f"🚀 Travel Assistant Started!")
     print(f"{'='*60}")
@@ -133,26 +139,23 @@ async def handle_query(request: QueryRequest):
     # Get language name for responses
     language_name = get_language_name(request.language)
     
-    # First, check if this is a service request
-    service_request = detect_service_request(request.query)
+    # Use LLM function calling to detect service requests
+    service_request = await Llama.detect_service_with_tools(request.query, request.language)
     if service_request:
         alert = {
             'seatNumber': request.seatNumber,
             'serviceType': service_request['serviceType'],
-            'message': service_request['message'],
+            'message': request.query,  # Show the original passenger query
             'priority': service_request['priority'],
             'timestamp': datetime.now().isoformat()
         }
-        
         await crew_manager.broadcast(alert)
         print(f"🚨 Service request detected: {service_request['serviceType']} from seat {request.seatNumber}")
-        
         response_message = get_service_message(
             request.language, 
             service_request['serviceType'], 
             request.seatNumber
         )
-        
         return {
             "answer": response_message,
             "destination": request.destination,
@@ -198,10 +201,17 @@ async def handle_query(request: QueryRequest):
 
     if not context_prompt and chroma_manager:
         try:
-            # Use English query for fallback search too
-            kb_docs = chroma_manager.query(query_english, top_k=3)
+            # Use filtered search with destination for better relevance
+            kb_docs = chroma_manager.query(query_english, top_k=3, destination=request.destination)
             if kb_docs:
-                kb_lines = [f"- {d}" for d in kb_docs]
+                kb_lines = []
+                for d in kb_docs:
+                    if isinstance(d, dict):
+                        title = d.get('title', 'Source')
+                        content = d.get('content') or d.get('text') or str(d)
+                        kb_lines.append(f"**{title}**:\n{content[:1024]}")
+                    else:
+                        kb_lines.append(f"- {d}")
                 kb_section = "\n\nKNOWLEDGE BASE:\n" + "\n\n".join(kb_lines)
                 context_prompt = f"""You are a helpful travel assistant. You MUST respond entirely in {language_name}.
 
@@ -332,10 +342,33 @@ async def crew_websocket_endpoint(websocket: WebSocket):
         crew_manager.disconnect(websocket)
 
 
+@app.get("/api/crew/alerts")
+async def get_crew_alerts():
+    """Get all stored crew alerts."""
+    return crew_manager.get_alerts()
+
+
 @app.post("/api/crew/acknowledge")
 async def acknowledge_crew_alert(request: dict):
     """Acknowledge a crew alert."""
-    return {"status": "success", "message": "Alert acknowledged"}
+    alert_id = request.get('alertId')
+    if alert_id is not None:
+        success = crew_manager.acknowledge_alert(alert_id)
+        if success:
+            return {"status": "success", "message": "Alert acknowledged"}
+        return {"status": "not_found", "message": "Alert not found"}
+    return {"status": "error", "message": "No alertId provided"}
+
+
+@app.delete("/api/crew/alerts")
+async def clear_crew_alerts(acknowledged_only: bool = True):
+    """Clear crew alerts. By default only clears acknowledged alerts."""
+    if acknowledged_only:
+        count = crew_manager.clear_acknowledged()
+        return {"status": "success", "message": f"Cleared {count} acknowledged alerts"}
+    else:
+        count = crew_manager.clear_all_alerts()
+        return {"status": "success", "message": f"Cleared all {count} alerts"}
 
 
 # =============================================================================
@@ -344,7 +377,7 @@ async def acknowledge_crew_alert(request: dict):
 
 if __name__ == "__main__":
     uvicorn.run(
-        "travel_assistant:app",
+        "main:app",
         host="0.0.0.0", 
         port=8000,
         reload=True

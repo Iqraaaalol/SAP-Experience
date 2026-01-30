@@ -9,7 +9,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-3
 NUM_EPOCHS = 3
-INPUT_SIZE = (300, 300) # EfficientNet-B3 resolution
+INPUT_SIZE = (224, 224) # ConvNeXt standard resolution
 NUM_WORKERS = 4
 WEIGHT_DECAY = 1e-4
 VAL_SPLIT = 0.1
@@ -18,7 +18,7 @@ RANDOM_SEED = 42
 # Model Configuration
 NUM_CLASSES = 7
 CLASS_NAMES = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
-MODEL_NAME = "efficientnet_b3"
+MODEL_NAME = "convnext_base"
 PRETRAINED = True
 
 # Paths
@@ -30,4 +30,4 @@ TRAIN_DIR = os.path.join(DATA_DIR, "train")
 TEST_DIR = os.path.join(DATA_DIR, "test")
 
 CHECKPOINT_DIR = "checkpoints"
-BEST_MODEL_PATH = "best_efficientnet_b3.pth"
+BEST_MODEL_PATH = "best_convnext_base.pth"

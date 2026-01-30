@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Enable offline mode for HuggingFace - use cached models only
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 # Base directories - use absolute paths
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # SAP-Experience root
 APP_DIR = BASE_DIR / "app"

@@ -12,22 +12,23 @@ from data_preprocessing import get_data_loaders
 
 def create_model(num_classes, pretrained=True):
     """
-    Initialize EfficientNet-B3 model.
+    Initialize ConvNeXt-Base model.
     """
-    print(f"Initializing EfficientNet-B3 with {num_classes} output classes...")
-    # Load model with weights enum if available in newer torchvision, else usage pretrained=True
+    print(f"Initializing ConvNeXt-Base with {num_classes} output classes...")
+    # Load model with weights enum if available in newer torchvision
     try:
-        from torchvision.models import EfficientNet_B3_Weights
-        weights = EfficientNet_B3_Weights.DEFAULT if pretrained else None
-        model = models.efficientnet_b3(weights=weights)
+        from torchvision.models import ConvNeXt_Base_Weights
+        weights = ConvNeXt_Base_Weights.DEFAULT if pretrained else None
+        model = models.convnext_base(weights=weights)
     except ImportError:
         # Fallback for older torchvision versions
-        model = models.efficientnet_b3(pretrained=pretrained)
+        model = models.convnext_base(pretrained=pretrained)
     
     # Modify classifier for our number of classes
-    # EfficientNet's classifier is a Sequential block with Dropout and Linear
-    in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, num_classes)
+    # ConvNeXt's classifier is Sequential: [LayerNorm, Flatten, Linear]
+    # The Linear layer is at index 2
+    in_features = model.classifier[2].in_features
+    model.classifier[2] = nn.Linear(in_features, num_classes)
     
     return model.to(config.DEVICE)
 

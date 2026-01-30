@@ -4,121 +4,36 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Crew Dashboard - Flight Attendant Alerts</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <link rel="stylesheet" href="/static/css/crew-dashboard.css">
 </head>
 <body>
-    <div class="dashboard-container">
-        <div class="sidebar">
-            <h2 style="margin-bottom: 24px;">📊 Crew Panel</h2>
-            
-            <div class="connection-status">
-                <div class="status-indicator" id="statusIndicator"></div>
-                <div>
-                    <div style="font-weight: 600; font-size: 14px;">Connection</div>
-                    <div style="font-size: 12px; color: var(--color-text-secondary);" id="statusText">Connecting...</div>
-                </div>
-            </div>
+    <div id="root"></div>
 
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-value urgent" id="pendingCount">0</div>
-                    <div class="stat-label">Pending</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value" id="totalCount">0</div>
-                    <div class="stat-label">Total</div>
-                </div>
-            </div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
-            <h3 style="margin-bottom: 12px; font-size: 14px; color: var(--color-text-secondary);">CATEGORIES</h3>
-            <div class="category-list">
-                <div class="category-item"><span>🍹 Beverages</span><span class="category-count" id="beverageCount">0</span></div>
-                <div class="category-item"><span>🍽️ Food</span><span class="category-count" id="foodCount">0</span></div>
-                <div class="category-item"><span>🛏️ Comfort</span><span class="category-count" id="comfortCount">0</span></div>
-                <div class="category-item"><span>🏥 Medical</span><span class="category-count" id="medicalCount">0</span></div>
-                <div class="category-item"><span>📢 Other</span><span class="category-count" id="otherCount">0</span></div>
-            </div>
-        </div>
-
-        <div class="main-panel">
-            <div class="header">
-                <h1>🚨 Crew Alert Dashboard</h1>
-            </div>
-
-            <div class="alert-section">
-                <div class="filter-buttons">
-                    <button class="filter-btn active" data-filter="all">All Alerts</button>
-                    <button class="filter-btn" data-filter="pending">⏳ Pending</button>
-                    <button class="filter-btn" data-filter="acknowledged">✓ Acknowledged</button>
-                </div>
-
-                <div id="alertsList">
-                    <div class="empty-state">
-                        <div class="empty-state-icon">✈️</div>
-                        <h3>No Alerts</h3>
-                        <p>Waiting for passenger service requests...</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let ws = null;
-        let alerts = [];
-        let currentFilter = 'all';
-
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/crew`;
-            
-            ws = new WebSocket(wsUrl);
-
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                updateConnectionStatus(true);
+        // Helper functions
+        const getServiceIcon = (serviceType) => {
+            const icons = {
+                'beverage': '🍹', 'food': '🍽️', 'blanket': '🛏️', 'pillow': '🛏️',
+                'assistance': '🆘', 'medical': '🏥', 'entertainment': '🎬', 'other': '📢'
             };
+            return icons[serviceType?.toLowerCase()] || '📢';
+        };
 
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                handleNewAlert(data);
-            };
+        const capitalizeFirst = (str) => {
+            return str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
+        };
 
-            ws.onclose = () => {
-                console.log('WebSocket disconnected');
-                updateConnectionStatus(false);
-                setTimeout(connectWebSocket, 3000);
-            };
+        const formatTime = (timestamp) => {
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        };
 
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-            };
-        }
-
-        function updateConnectionStatus(connected) {
-            const indicator = document.getElementById('statusIndicator');
-            const statusText = document.getElementById('statusText');
-            
-            if (connected) {
-                indicator.classList.add('connected');
-                statusText.textContent = 'Live';
-            } else {
-                indicator.classList.remove('connected');
-                statusText.textContent = 'Reconnecting...';
-            }
-        }
-
-        function handleNewAlert(alert) {
-            alert.id = Date.now() + Math.random();
-            alert.acknowledged = false;
-            alerts.unshift(alert);
-            
-            playNotificationSound(alert.priority);
-            renderAlerts();
-            updateStats();
-        }
-
-        function playNotificationSound(priority) {
+        const playNotificationSound = (priority) => {
             try {
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const oscillator = audioContext.createOscillator();
@@ -138,119 +53,318 @@
             } catch (e) {
                 console.log('Audio not supported');
             }
+        };
+
+        // Custom hook for WebSocket connection
+        function useWebSocket(onMessage) {
+            const [isConnected, setIsConnected] = useState(false);
+            const wsRef = useRef(null);
+            const reconnectTimeoutRef = useRef(null);
+
+            const connect = useCallback(() => {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/crew`;
+                
+                wsRef.current = new WebSocket(wsUrl);
+
+                wsRef.current.onopen = () => {
+                    console.log('WebSocket connected');
+                    setIsConnected(true);
+                };
+
+                wsRef.current.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    onMessage(data);
+                };
+
+                wsRef.current.onclose = () => {
+                    console.log('WebSocket disconnected');
+                    setIsConnected(false);
+                    reconnectTimeoutRef.current = setTimeout(connect, 3000);
+                };
+
+                wsRef.current.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+            }, [onMessage]);
+
+            useEffect(() => {
+                connect();
+                return () => {
+                    if (wsRef.current) {
+                        wsRef.current.close();
+                    }
+                    if (reconnectTimeoutRef.current) {
+                        clearTimeout(reconnectTimeoutRef.current);
+                    }
+                };
+            }, [connect]);
+
+            return isConnected;
         }
 
-        function renderAlerts() {
-            const alertsList = document.getElementById('alertsList');
-            let filteredAlerts = alerts;
-
-            if (currentFilter === 'pending') {
-                filteredAlerts = alerts.filter(a => !a.acknowledged);
-            } else if (currentFilter === 'acknowledged') {
-                filteredAlerts = alerts.filter(a => a.acknowledged);
-            }
-
-            if (filteredAlerts.length === 0) {
-                alertsList.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">✈️</div>
-                        <h3>No Alerts</h3>
-                        <p>Waiting for passenger service requests...</p>
+        // Connection Status Component
+        function ConnectionStatus({ isConnected }) {
+            return (
+                <div className="connection-status">
+                    <div className={`status-indicator ${isConnected ? 'connected' : ''}`}></div>
+                    <div>
+                        <div style={{ fontWeight: 600, fontSize: '14px' }}>Connection</div>
+                        <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+                            {isConnected ? 'Live' : 'Reconnecting...'}
+                        </div>
                     </div>
-                `;
-                return;
-            }
+                </div>
+            );
+        }
 
-            alertsList.innerHTML = filteredAlerts.map(alert => `
-                <div class="alert-card priority-${alert.priority} ${alert.acknowledged ? 'acknowledged' : ''}" data-id="${alert.id}">
-                    <div class="alert-header">
+        // Stats Sidebar Component
+        function StatsSidebar({ alerts, isConnected }) {
+            const stats = useMemo(() => {
+                const pending = alerts.filter(a => !a.acknowledged).length;
+                const categories = { beverage: 0, food: 0, comfort: 0, medical: 0, other: 0 };
+
+                alerts.filter(a => !a.acknowledged).forEach(alert => {
+                    const type = alert.serviceType?.toLowerCase();
+                    if (type === 'beverage') categories.beverage++;
+                    else if (type === 'food') categories.food++;
+                    else if (['blanket', 'pillow'].includes(type)) categories.comfort++;
+                    else if (type === 'medical') categories.medical++;
+                    else categories.other++;
+                });
+
+                return { pending, total: alerts.length, categories };
+            }, [alerts]);
+
+            return (
+                <div className="sidebar">
+                    <h2 style={{ marginBottom: '24px' }}>📊 Crew Panel</h2>
+                    
+                    <ConnectionStatus isConnected={isConnected} />
+
+                    <div className="stats-grid">
+                        <div className="stat-card">
+                            <div className="stat-value urgent">{stats.pending}</div>
+                            <div className="stat-label">Pending</div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-value">{stats.total}</div>
+                            <div className="stat-label">Total</div>
+                        </div>
+                    </div>
+
+                    <h3 style={{ marginBottom: '12px', fontSize: '14px', color: 'var(--color-text-secondary)' }}>CATEGORIES</h3>
+                    <div className="category-list">
+                        <div className="category-item">
+                            <span>🍹 Beverages</span>
+                            <span className="category-count">{stats.categories.beverage}</span>
+                        </div>
+                        <div className="category-item">
+                            <span>🍽️ Food</span>
+                            <span className="category-count">{stats.categories.food}</span>
+                        </div>
+                        <div className="category-item">
+                            <span>🛏️ Comfort</span>
+                            <span className="category-count">{stats.categories.comfort}</span>
+                        </div>
+                        <div className="category-item">
+                            <span>🏥 Medical</span>
+                            <span className="category-count">{stats.categories.medical}</span>
+                        </div>
+                        <div className="category-item">
+                            <span>📢 Other</span>
+                            <span className="category-count">{stats.categories.other}</span>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Alert Card Component
+        function AlertCard({ alert, onAcknowledge }) {
+            return (
+                <div className={`alert-card priority-${alert.priority} ${alert.acknowledged ? 'acknowledged' : ''}`}>
+                    <div className="alert-header">
                         <div>
-                            <div class="alert-seat">🪑 Seat ${alert.seatNumber}</div>
-                            <div class="alert-type">
-                                <span>${getServiceIcon(alert.serviceType)} ${capitalizeFirst(alert.serviceType)}</span>
-                                ${!alert.acknowledged ? `<span class="badge badge-${alert.priority === 'high' ? 'danger' : 'warning'}">NEW</span>` : '<span class="badge badge-info">DONE</span>'}
+                            <div className="alert-seat">🪑 Seat {alert.seatNumber}</div>
+                            <div className="alert-type">
+                                <span>{getServiceIcon(alert.serviceType)} {capitalizeFirst(alert.serviceType)}</span>
+                                {!alert.acknowledged ? (
+                                    <span className={`badge badge-${alert.priority === 'high' ? 'danger' : 'warning'}`}>NEW</span>
+                                ) : (
+                                    <span className="badge badge-info">DONE</span>
+                                )}
                             </div>
                         </div>
-                        <div class="alert-time">${formatTime(alert.timestamp)}</div>
+                        <div className="alert-time">{formatTime(alert.timestamp)}</div>
                     </div>
-                    <div class="alert-message">"${alert.message}"</div>
-                    ${!alert.acknowledged ? `
-                        <div class="alert-actions">
-                            <button class="btn btn-success" onclick="acknowledgeAlert(${alert.id})">
+                    <div className="alert-message">"{alert.message}"</div>
+                    {!alert.acknowledged && (
+                        <div className="alert-actions">
+                            <button className="btn btn-success" onClick={() => onAcknowledge(alert.id)}>
                                 ✓ Mark as Handled
                             </button>
                         </div>
-                    ` : ''}
+                    )}
                 </div>
-            `).join('');
+            );
         }
 
-        function getServiceIcon(serviceType) {
-            const icons = {
-                'beverage': '🍹', 'food': '🍽️', 'blanket': '🛏️', 'pillow': '🛏️',
-                'assistance': '🆘', 'medical': '🏥', 'entertainment': '🎬', 'other': '📢'
-            };
-            return icons[serviceType?.toLowerCase()] || '📢';
-        }
+        // Alert List Component
+        function AlertList({ alerts, filter, onAcknowledge }) {
+            const filteredAlerts = useMemo(() => {
+                if (filter === 'pending') {
+                    return alerts.filter(a => !a.acknowledged);
+                } else if (filter === 'acknowledged') {
+                    return alerts.filter(a => a.acknowledged);
+                }
+                return alerts;
+            }, [alerts, filter]);
 
-        function capitalizeFirst(str) {
-            return str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
-        }
-
-        function formatTime(timestamp) {
-            const date = new Date(timestamp);
-            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-        }
-
-        function acknowledgeAlert(alertId) {
-            const alert = alerts.find(a => a.id === alertId);
-            if (alert) {
-                alert.acknowledged = true;
-                renderAlerts();
-                updateStats();
-
-                fetch('/api/crew/acknowledge', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ alertId: alert.id, seatNumber: alert.seatNumber })
-                });
+            if (filteredAlerts.length === 0) {
+                return (
+                    <div className="empty-state">
+                        <div className="empty-state-icon">✈️</div>
+                        <h3>No Alerts</h3>
+                        <p>Waiting for passenger service requests...</p>
+                    </div>
+                );
             }
+
+            return (
+                <div>
+                    {filteredAlerts.map(alert => (
+                        <AlertCard
+                            key={alert.id}
+                            alert={alert}
+                            onAcknowledge={onAcknowledge}
+                        />
+                    ))}
+                </div>
+            );
         }
 
-        function updateStats() {
-            const pending = alerts.filter(a => !a.acknowledged).length;
-            document.getElementById('pendingCount').textContent = pending;
-            document.getElementById('totalCount').textContent = alerts.length;
+        // Filter Buttons Component
+        function FilterButtons({ currentFilter, onFilterChange }) {
+            const filters = [
+                { key: 'all', label: 'All Alerts' },
+                { key: 'pending', label: '⏳ Pending' },
+                { key: 'acknowledged', label: '✓ Acknowledged' }
+            ];
 
-            const categories = { beverage: 0, food: 0, comfort: 0, medical: 0, other: 0 };
-
-            alerts.filter(a => !a.acknowledged).forEach(alert => {
-                const type = alert.serviceType?.toLowerCase();
-                if (type === 'beverage') categories.beverage++;
-                else if (type === 'food') categories.food++;
-                else if (['blanket', 'pillow'].includes(type)) categories.comfort++;
-                else if (type === 'medical') categories.medical++;
-                else categories.other++;
-            });
-
-            document.getElementById('beverageCount').textContent = categories.beverage;
-            document.getElementById('foodCount').textContent = categories.food;
-            document.getElementById('comfortCount').textContent = categories.comfort;
-            document.getElementById('medicalCount').textContent = categories.medical;
-            document.getElementById('otherCount').textContent = categories.other;
+            return (
+                <div className="filter-buttons">
+                    {filters.map(({ key, label }) => (
+                        <button
+                            key={key}
+                            className={`filter-btn ${currentFilter === key ? 'active' : ''}`}
+                            onClick={() => onFilterChange(key)}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </div>
+            );
         }
 
-        document.querySelectorAll('.filter-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentFilter = btn.dataset.filter;
-                renderAlerts();
-            });
-        });
+        // Main App Component
+        function CrewDashboardApp() {
+            const [alerts, setAlerts] = useState([]);
+            const [currentFilter, setCurrentFilter] = useState('all');
 
-        connectWebSocket();
-        updateStats();
+            // Handle new alert from WebSocket
+            const handleNewAlert = useCallback((alert) => {
+                setAlerts(prevAlerts => {
+                    // Check if alert already exists
+                    const existingIndex = prevAlerts.findIndex(a => a.id === alert.id);
+                    if (existingIndex !== -1) {
+                        return prevAlerts;
+                    }
+                    
+                    // Add default values if missing
+                    const newAlert = {
+                        ...alert,
+                        id: alert.id || Date.now() + Math.random(),
+                        acknowledged: alert.acknowledged ?? false
+                    };
+                    
+                    playNotificationSound(alert.priority);
+                    return [newAlert, ...prevAlerts];
+                });
+            }, []);
+
+            // Connect to WebSocket
+            const isConnected = useWebSocket(handleNewAlert);
+
+            // Load existing alerts on mount
+            useEffect(() => {
+                const loadExistingAlerts = async () => {
+                    try {
+                        const response = await fetch('/api/crew/alerts');
+                        if (response.ok) {
+                            const existingAlerts = await response.json();
+                            setAlerts(existingAlerts);
+                            console.log(`Loaded ${existingAlerts.length} existing alerts`);
+                        }
+                    } catch (error) {
+                        console.error('Failed to load existing alerts:', error);
+                    }
+                };
+                loadExistingAlerts();
+            }, []);
+
+            // Acknowledge alert handler
+            const handleAcknowledge = useCallback(async (alertId) => {
+                setAlerts(prevAlerts =>
+                    prevAlerts.map(alert =>
+                        alert.id === alertId ? { ...alert, acknowledged: true } : alert
+                    )
+                );
+
+                const alert = alerts.find(a => a.id === alertId);
+                if (alert) {
+                    try {
+                        await fetch('/api/crew/acknowledge', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ alertId: alertId, seatNumber: alert.seatNumber })
+                        });
+                    } catch (error) {
+                        console.error('Failed to acknowledge alert:', error);
+                    }
+                }
+            }, [alerts]);
+
+            return (
+                <div className="dashboard-container">
+                    <StatsSidebar alerts={alerts} isConnected={isConnected} />
+
+                    <div className="main-panel">
+                        <div className="header">
+                            <h1>🚨 Crew Alert Dashboard</h1>
+                        </div>
+
+                        <div className="alert-section">
+                            <FilterButtons
+                                currentFilter={currentFilter}
+                                onFilterChange={setCurrentFilter}
+                            />
+
+                            <div id="alertsList">
+                                <AlertList
+                                    alerts={alerts}
+                                    filter={currentFilter}
+                                    onAcknowledge={handleAcknowledge}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Render app
+        ReactDOM.createRoot(document.getElementById('root')).render(<CrewDashboardApp />);
     </script>
 </body>
 </html>
