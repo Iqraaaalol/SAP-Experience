@@ -52,43 +52,50 @@ DEFAULT_TOOL = {
 class LlamaInterface:
     """Interface to interact with Ollama LLM."""
     
-    def __init__(self, ollama_url: str = OLLAMA_URL, model_name: str = MODEL_NAME):
+    def __init__(self, ollama_url: str = OLLAMA_URL, model_name: str = MODEL_NAME, max_concurrency: int = 4):
         self.ollama_url = ollama_url
         self.model_name = model_name
         self.client = Client(host=ollama_url)
+        self._sema = asyncio.Semaphore(max_concurrency)
         print(f"LlamaInterface initialized")
         print(f"   Model: {self.model_name}")
         print(f"   URL: {self.ollama_url}")
     
     async def generate_response(self, prompt: str, temperature: float = 0.7) -> str:
-        """Query model using Ollama library."""
-        try:
-            print(f"Querying model: {self.model_name}")
-            
-            loop = asyncio.get_event_loop()
-            
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.generate(
-                    model=self.model_name,
-                    prompt=prompt,
-                    options={
-                        "temperature": 0.1,        
-                        "top_p": 0.6,
-                        "top_k": 3
-                    },
-                    keep_alive=-1,
-                    stream=False
-                )
-            )
-            
-            answer = response['response'].strip()
-            print(f"Got response: {answer[:50]}...")
-            return answer
-        
-        except Exception as e:
-            print(f"Error: {e}")
-            return f"Sorry, an error occurred: {str(e)}"
+        """Query model using Ollama library with retries and concurrency control."""
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"Querying model: {self.model_name} (attempt {attempt})")
+                async with self._sema:
+                    response = await asyncio.to_thread(
+                        lambda: Client(host=self.ollama_url).generate(
+                            model=self.model_name,
+                            prompt=prompt,
+                            options={
+                                "temperature": float(temperature),
+                                "top_p": 0.6,
+                                "top_k": 3
+                            },
+                            stream=False
+                        )
+                    )
+
+                # Attempt to extract answer safely
+                answer = response.get('response') if isinstance(response, dict) else getattr(response, 'response', None)
+                if not answer:
+                    answer = str(response)
+                answer = answer.strip()
+                print(f"Got response: {answer[:120]}")
+                return answer
+
+            except Exception as e:
+                print(f"generate_response attempt {attempt} failed: {e}")
+                if attempt < max_retries:
+                    backoff = 0.5 * (2 ** (attempt - 1))
+                    await asyncio.sleep(backoff)
+                    continue
+                return f"Sorry, an error occurred: {str(e)}"
 
     async def detect_service_with_tools(self, query: str, language: str = "en") -> dict | None:
         """
@@ -98,8 +105,6 @@ class LlamaInterface:
             dict with service details if service detected, None otherwise
         """
         try:
-            loop = asyncio.get_event_loop()
-            
             system_prompt = """You are Avia, a helpful assistant on a flydubai aircraft in the air. 
 
 You CAN answer:
@@ -139,16 +144,31 @@ User: "I'd like a coffee" → Call: request_service("coffee")
                 {'role': 'user', 'content': query}
             ]
             
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat(
-                    model=self.model_name,
-                    messages=messages,
-                    tools=[SERVICE_TOOL, DEFAULT_TOOL],
-                    options={"temperature": 0.1, "num_ctx": 8192},
-                    stream=False
-                )
-            )
+            # Use a small retry loop to avoid transient Ollama runner restarts
+            max_retries = 3
+            response = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    print(f"Detect service attempt {attempt}")
+                    async with self._sema:
+                        response = await asyncio.to_thread(
+                            lambda: Client(host=self.ollama_url).chat(
+                                model=self.model_name,
+                                messages=messages,
+                                tools=[SERVICE_TOOL, DEFAULT_TOOL],
+                                options={"temperature": 0.1},
+                                stream=False
+                            )
+                        )
+                    break
+                except Exception as e:
+                    print(f"detect_service_with_tools attempt {attempt} failed: {e}")
+                    if attempt < max_retries:
+                        backoff = 0.5 * (2 ** (attempt - 1))
+                        await asyncio.sleep(backoff)
+                        continue
+                    print(f"Tool detection error after retries: {e}")
+                    return None
             
             # Check if model called the service tool
             if response.message.tool_calls:
