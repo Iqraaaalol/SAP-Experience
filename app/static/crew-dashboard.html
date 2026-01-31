@@ -8,6 +8,100 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <link rel="stylesheet" href="/static/css/crew-dashboard.css">
+    <style>
+        /* Additional styles for video feed */
+        .video-feed-container {
+            background: var(--color-bg-secondary, #1e1e1e);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        .video-feed-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        
+        .video-feed-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--color-text-primary, #ffffff);
+        }
+        
+        .video-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: var(--color-text-secondary, #b0b0b0);
+        }
+        
+        .video-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ff4444;
+        }
+        
+        .video-status-dot.live {
+            background: #00ff00;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .video-stream {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        
+        .video-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 16px;
+            text-align: center;
+        }
+        
+        .loading-spinner {
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-top: 3px solid white;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Active category highlight */
+        .category-item.active {
+            background: rgba(255,255,255,0.03);
+            border-left: 3px solid var(--color-accent, #00b4d8);
+            padding-left: 10px;
+        }
+    </style>
 </head>
 <body>
     <div id="root"></div>
@@ -54,6 +148,61 @@
                 console.log('Audio not supported');
             }
         };
+
+        // Video Feed Component
+        function VideoFeed({ videoUrl = "/video_feed" }) {
+            const [isLoading, setIsLoading] = useState(true);
+            const [hasError, setHasError] = useState(false);
+            const imgRef = useRef(null);
+
+            const handleLoad = () => {
+                setIsLoading(false);
+                setHasError(false);
+            };
+
+            const handleError = () => {
+                setIsLoading(false);
+                setHasError(true);
+            };
+
+            return (
+                <div className="video-feed-container">
+                    <div className="video-feed-header">
+                        <div className="video-feed-title">📹 Live Passenger Monitor</div>
+                        <div className="video-status">
+                            <div className={`video-status-dot ${!isLoading && !hasError ? 'live' : ''}`}></div>
+                            <span>{!isLoading && !hasError ? 'LIVE' : hasError ? 'Disconnected' : 'Connecting...'}</span>
+                        </div>
+                    </div>
+                    <div className="video-wrapper">
+                        {isLoading && (
+                            <div className="video-overlay">
+                                <div className="loading-spinner"></div>
+                                <div>Connecting to camera...</div>
+                            </div>
+                        )}
+                        {hasError && (
+                            <div className="video-overlay">
+                                <div style={{ fontSize: '48px', marginBottom: '10px' }}>📷</div>
+                                <div>Camera feed unavailable</div>
+                                <div style={{ fontSize: '12px', marginTop: '8px', opacity: 0.7 }}>
+                                    Check camera connection
+                                </div>
+                            </div>
+                        )}
+                        <img
+                            ref={imgRef}
+                            src={videoUrl}
+                            alt="Live camera feed"
+                            className="video-stream"
+                            onLoad={handleLoad}
+                            onError={handleError}
+                            style={{ display: hasError ? 'none' : 'block' }}
+                        />
+                    </div>
+                </div>
+            );
+        }
 
         // Custom hook for WebSocket connection
         function useWebSocket(onMessage) {
@@ -119,7 +268,7 @@
         }
 
         // Stats Sidebar Component
-        function StatsSidebar({ alerts, isConnected }) {
+        function StatsSidebar({ alerts, isConnected, selectedCategory, onCategoryClick }) {
             const stats = useMemo(() => {
                 const pending = alerts.filter(a => !a.acknowledged).length;
                 const categories = { beverage: 0, food: 0, comfort: 0, medical: 0, other: 0 };
@@ -155,25 +304,48 @@
 
                     <h3 style={{ marginBottom: '12px', fontSize: '14px', color: 'var(--color-text-secondary)' }}>CATEGORIES</h3>
                     <div className="category-list">
-                        <div className="category-item">
+                        <div
+                            className={`category-item ${selectedCategory === 'beverage' ? 'active' : ''}`}
+                            onClick={() => onCategoryClick && onCategoryClick('beverage')}
+                        >
                             <span>🍹 Beverages</span>
                             <span className="category-count">{stats.categories.beverage}</span>
                         </div>
-                        <div className="category-item">
+                        <div
+                            className={`category-item ${selectedCategory === 'food' ? 'active' : ''}`}
+                            onClick={() => onCategoryClick && onCategoryClick('food')}
+                        >
                             <span>🍽️ Food</span>
                             <span className="category-count">{stats.categories.food}</span>
                         </div>
-                        <div className="category-item">
+                        <div
+                            className={`category-item ${selectedCategory === 'comfort' ? 'active' : ''}`}
+                            onClick={() => onCategoryClick && onCategoryClick('comfort')}
+                        >
                             <span>🛏️ Comfort</span>
                             <span className="category-count">{stats.categories.comfort}</span>
                         </div>
-                        <div className="category-item">
+                        <div
+                            className={`category-item ${selectedCategory === 'medical' ? 'active' : ''}`}
+                            onClick={() => onCategoryClick && onCategoryClick('medical')}
+                        >
                             <span>🏥 Medical</span>
                             <span className="category-count">{stats.categories.medical}</span>
                         </div>
-                        <div className="category-item">
+                        <div
+                            className={`category-item ${selectedCategory === 'other' ? 'active' : ''}`}
+                            onClick={() => onCategoryClick && onCategoryClick('other')}
+                        >
                             <span>📢 Other</span>
                             <span className="category-count">{stats.categories.other}</span>
+                        </div>
+                        <div
+                            className={`category-item ${selectedCategory === 'video' ? 'active' : ''}`}
+                            onClick={() => onCategoryClick && onCategoryClick('video')}
+                            style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '8px' }}
+                        >
+                            <span>📹 Camera Feed</span>
+                            <span className="category-count">{1}</span>
                         </div>
                     </div>
                 </div>
@@ -271,6 +443,7 @@
         function CrewDashboardApp() {
             const [alerts, setAlerts] = useState([]);
             const [currentFilter, setCurrentFilter] = useState('all');
+            const [selectedCategory, setSelectedCategory] = useState('all');
 
             // Handle new alert from WebSocket
             const handleNewAlert = useCallback((alert) => {
@@ -337,27 +510,37 @@
 
             return (
                 <div className="dashboard-container">
-                    <StatsSidebar alerts={alerts} isConnected={isConnected} />
+                    <StatsSidebar
+                        alerts={alerts}
+                        isConnected={isConnected}
+                        selectedCategory={selectedCategory}
+                        onCategoryClick={(cat) => setSelectedCategory(cat)}
+                    />
 
                     <div className="main-panel">
                         <div className="header">
                             <h1>🚨 Crew Alert Dashboard</h1>
                         </div>
 
-                        <div className="alert-section">
-                            <FilterButtons
-                                currentFilter={currentFilter}
-                                onFilterChange={setCurrentFilter}
-                            />
-
-                            <div id="alertsList">
-                                <AlertList
-                                    alerts={alerts}
-                                    filter={currentFilter}
-                                    onAcknowledge={handleAcknowledge}
+                        {/* Show video only when 'video' category selected */}
+                        {selectedCategory === 'video' ? (
+                            <VideoFeed />
+                        ) : (
+                            <div className="alert-section">
+                                <FilterButtons
+                                    currentFilter={currentFilter}
+                                    onFilterChange={setCurrentFilter}
                                 />
+
+                                <div id="alertsList">
+                                    <AlertList
+                                        alerts={alerts}
+                                        filter={currentFilter}
+                                        onAcknowledge={handleAcknowledge}
+                                    />
+                                </div>
                             </div>
-                        </div>
+                        )}
                     </div>
                 </div>
             );
