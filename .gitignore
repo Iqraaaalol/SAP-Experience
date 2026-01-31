@@ -188,3 +188,4 @@ chroma_db/
 data/
 checkpoints/best_convnext_base.pth
 clip.mp4
+confusion_matrix.png

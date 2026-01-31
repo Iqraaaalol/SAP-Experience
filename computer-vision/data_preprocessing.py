@@ -8,10 +8,6 @@ from torch.utils.data import DataLoader, Subset
 import config
 
 def get_transforms():
-    """
-    Returns training and validation data transforms.
-    EfficientNet-B3 requires specific normalization and resizing.
-    """
     # ImageNet normalization statistics
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406],

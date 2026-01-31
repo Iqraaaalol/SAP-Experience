@@ -7,8 +7,8 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Hyperparameters
 BATCH_SIZE = 32
-LEARNING_RATE = 1e-3
-NUM_EPOCHS = 3
+LEARNING_RATE = 5e-3
+NUM_EPOCHS = 30
 INPUT_SIZE = (224, 224) # ConvNeXt standard resolution
 NUM_WORKERS = 4
 WEIGHT_DECAY = 1e-4
