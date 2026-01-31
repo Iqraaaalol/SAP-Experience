@@ -33,6 +33,7 @@ class ConvNeXtEmotionDetector:
             'surprise': (255, 0, 255)   # Magenta
         }
         self.emotion_colors = base_colors
+    
         
         # Default fallback if checkpoint doesn't have names
         self.class_names = class_names if class_names else config.CLASS_NAMES
@@ -47,6 +48,23 @@ class ConvNeXtEmotionDetector:
         # Alignment settings
         self.output_size = config.INPUT_SIZE  # (224, 224)
         self.desired_left_eye = (0.35, 0.35)  # Left eye position in normalized coords
+        self.emotion_groups = {
+            'angry': 'distressed',
+            'disgust': 'distressed',
+            'fear': 'distressed',
+            'sad': 'distressed',
+            'happy': 'happy',
+            'neutral': 'neutral',
+            'surprise': 'surprise'
+        }
+        
+        # Define colors for grouped emotions
+        self.grouped_colors = {
+            'distressed': (0, 0, 255),    # Red for distress
+            'happy': (0, 255, 0),         # Green
+            'neutral': (255, 255, 0),     # Cyan
+            'surprise': (255, 0, 255)     # Magenta
+        }
         
     def align_face(self, image, landmarks):
         """
@@ -131,22 +149,22 @@ class ConvNeXtEmotionDetector:
 
     def detect_emotion(self, face_image, landmarks=None):
         """
-        Detect emotion from face image.
+        Detect emotion from face image with grouping.
         
         Args:
             face_image: BGR face image (numpy array)
             landmarks: Optional 5 facial landmarks for alignment
         
         Returns:
-            (dominant_emotion, confidence, emotion_dict)
+            (grouped_emotion, confidence, emotion_dict)
         """
         if face_image is None or face_image.size == 0:
-             return 'neutral', 0.0, {}
+            return 'neutral', 0.0, {}
         
         # Apply face alignment if landmarks provided
         if landmarks is not None:
             face_image = self.align_face(face_image, landmarks)
-             
+            
         # Convert BGR (OpenCV) to RGB (PIL/Torch)
         rgb_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(rgb_face)
@@ -158,13 +176,25 @@ class ConvNeXtEmotionDetector:
             probs = torch.nn.functional.softmax(outputs, dim=1)
             conf, pred_idx = torch.max(probs, 1)
             
-        dominant_emotion = self.class_names[pred_idx.item()]
+        # Get original emotion
+        original_emotion = self.class_names[pred_idx.item()]
         confidence = conf.item()
         
-        # Format similar to DeepFace return for compatibility
-        emotion_dict = {name: probs[0][i].item() * 100 for i, name in enumerate(self.class_names)}
+        # Map to grouped emotion
+        grouped_emotion = self.emotion_groups.get(original_emotion, original_emotion)
         
-        return dominant_emotion, confidence, emotion_dict
+        # Create grouped emotion dict by combining probabilities
+        grouped_dict = {}
+        for original, grouped in self.emotion_groups.items():
+            if original in self.class_names:
+                idx = self.class_names.index(original)
+                prob = probs[0][idx].item() * 100
+                if grouped in grouped_dict:
+                    grouped_dict[grouped] += prob
+                else:
+                    grouped_dict[grouped] = prob
+        
+        return grouped_emotion, confidence, grouped_dict
 
 class FaceDetector:
     def __init__(self):
@@ -232,13 +262,13 @@ class FaceDetector:
             
             info_y = y1 - 70 if y1 > 100 else y2 + 20
             cv2.putText(frame, f"Face {i+1}", (x1, info_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             cv2.putText(frame, f"Conf: {prob:.2%}", (x1, info_y + 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             cv2.putText(frame, f"Size: {face_width}x{face_height}", (x1, info_y + 40),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             cv2.putText(frame, f"Dist: {distance}", (x1, info_y + 60),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
             # Draw emotion if available
             emotion_data = None
@@ -250,22 +280,22 @@ class FaceDetector:
             
             if emotion_data:
                 emotion, conf = emotion_data
-                emotion_color = self.emotion_detector.emotion_colors.get(emotion, (255, 255, 255))
+                # Use grouped emotion colors
+                emotion_color = self.emotion_detector.grouped_colors.get(emotion, (255, 255, 255))
                 cv2.putText(frame, f"Emotion: {emotion.upper()} ({conf:.0%})", 
-                           (x1, info_y + 80),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, emotion_color, 2)
+                        (x1, info_y + 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, emotion_color, 2)
             
+            # Draw landmarks
             if landmarks is not None and i < len(landmarks):
                 try:
                     landmark_points = landmarks[i]
                     if landmark_points is not None and len(landmark_points) > 0:
                         for point in landmark_points:
                             x, y = point.astype(int)
-                            # Validate coordinates are within frame bounds
                             if 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]:
                                 cv2.circle(frame, (x, y), 2, (255, 0, 0), -1)
                 except (TypeError, ValueError, IndexError):
-                    # Skip if invald data
                     pass
         
         return frame
