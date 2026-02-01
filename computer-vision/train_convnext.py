@@ -44,6 +44,31 @@ def create_model(num_classes, pretrained=True, load_from_checkpoint=None):
     
     return model.to(config.DEVICE)
 
+def freeze_backbone(model):
+    """
+    Freeze all backbone layers, keeping only classifier trainable.
+    """
+    print("Freezing backbone layers...")
+    for name, param in model.named_parameters():
+        if 'classifier' not in name:
+            param.requires_grad = False
+    
+    # Count trainable parameters
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"Trainable parameters: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
+
+def unfreeze_backbone(model):
+    """
+    Unfreeze all model parameters for full fine-tuning.
+    """
+    print("Unfreezing backbone layers...")
+    for param in model.parameters():
+        param.requires_grad = True
+    
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable parameters: {trainable:,}")
+
 def train_one_epoch(model, loader, criterion, optimizer, scaler=None):
     model.train()
     running_loss = 0.0
