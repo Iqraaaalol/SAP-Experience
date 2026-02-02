@@ -208,21 +208,12 @@ class ConvNeXtEmotionDetector:
         original_emotion = self.class_names[pred_idx.item()]
         confidence = conf.item()
         
-        # Map to grouped emotion
-        grouped_emotion = self.emotion_groups.get(original_emotion, original_emotion)
+        # Create original emotion probability dict (not grouped)
+        emotion_dict = {}
+        for i, emotion in enumerate(self.class_names):
+            emotion_dict[emotion] = probs[0][i].item()
         
-        # Create grouped emotion dict by combining probabilities
-        grouped_dict = {}
-        for original, grouped in self.emotion_groups.items():
-            if original in self.class_names:
-                idx = self.class_names.index(original)
-                prob = probs[0][idx].item() * 100
-                if grouped in grouped_dict:
-                    grouped_dict[grouped] += prob
-                else:
-                    grouped_dict[grouped] = prob
-        
-        return grouped_emotion, confidence, grouped_dict
+        return original_emotion, confidence, emotion_dict
 
 class FaceDetector:
     def __init__(self, frame_width: int = 1280, frame_height: int = 720):
@@ -336,8 +327,8 @@ class FaceDetector:
             
             if emotion_data:
                 emotion, conf = emotion_data
-                # Use grouped emotion colors
-                emotion_color = self.emotion_detector.grouped_colors.get(emotion, (255, 255, 255))
+                # Use original emotion colors
+                emotion_color = self.emotion_detector.emotion_colors.get(emotion, (255, 255, 255))
                 cv2.putText(frame, f"Emotion: {emotion.upper()} ({conf:.0%})", 
                         (x1, info_y + 80),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, emotion_color, 2)
@@ -490,9 +481,9 @@ def main():
                     face_landmarks[:, 1] -= y1
                 
                 if face_img.size > 0:
-                    emotion, conf, _ = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
+                    emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
                     seat_emotions[seat_id] = (emotion, conf)
-                    detector.seat_manager.update_seat_emotion(seat_id, emotion, conf)
+                    detector.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
             
             last_emotion_update = current_time
         

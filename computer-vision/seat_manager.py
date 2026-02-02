@@ -57,6 +57,7 @@ class SeatState:
     current_emotion: Optional[str] = None
     current_confidence: float = 0.0
     emotion_history: List[str] = field(default_factory=list)
+    emotion_probability_history: List[Dict[str, float]] = field(default_factory=list)  # Store probability distributions for smoothing
 
 
 class SeatManager:
@@ -423,15 +424,68 @@ class SeatManager:
         seat.emotion_history = []
         print(f"Seat {seat_id} vacated")
     
-    def update_seat_emotion(self, seat_id: str, emotion: str, confidence: float):
-        """Update emotion state for a seat."""
+    def update_seat_emotion(self, seat_id: str, emotion: str, confidence: float, emotion_probs: Optional[Dict[str, float]] = None):
+        """Update emotion state for a seat with temporal smoothing.
+        
+        Args:
+            seat_id: Seat identifier
+            emotion: Detected emotion (may be ignored if using smoothing)
+            confidence: Confidence of detection
+            emotion_probs: Dictionary of emotion probabilities for smoothing
+        """
         if seat_id in self.seats:
             seat = self.seats[seat_id]
-            seat.current_emotion = emotion
             seat.current_confidence = confidence
-            seat.emotion_history.append(emotion)
+            
+            # Store probability distribution if provided
+            if emotion_probs:
+                seat.emotion_probability_history.append(emotion_probs)
+                if len(seat.emotion_probability_history) > 10:
+                    seat.emotion_probability_history = seat.emotion_probability_history[-10:]
+                
+                # Calculate smoothed emotion from probability history
+                smoothed_emotion = self._get_smoothed_emotion(seat)
+                seat.current_emotion = smoothed_emotion
+                seat.emotion_history.append(smoothed_emotion)
+            else:
+                # Fallback to direct emotion if no probabilities provided
+                seat.current_emotion = emotion
+                seat.emotion_history.append(emotion)
+            
+            # Keep history at max 10 entries
             if len(seat.emotion_history) > 10:
                 seat.emotion_history = seat.emotion_history[-10:]
+    
+    def _get_smoothed_emotion(self, seat: SeatState) -> str:
+        """Get emotion by averaging probability distributions over time.
+        
+        This reduces flickering by considering recent probability distributions
+        rather than just the max prediction at each timestep.
+        
+        Args:
+            seat: SeatState with probability history
+            
+        Returns:
+            Smoothed emotion label
+        """
+        if not seat.emotion_probability_history:
+            return seat.current_emotion or 'neutral'
+        
+        # Average probabilities across recent history
+        avg_probs = {}
+        for prob_dict in seat.emotion_probability_history:
+            for emotion, prob in prob_dict.items():
+                avg_probs[emotion] = avg_probs.get(emotion, 0.0) + prob
+        
+        # Normalize by number of samples
+        num_samples = len(seat.emotion_probability_history)
+        for emotion in avg_probs:
+            avg_probs[emotion] /= num_samples
+        
+        # Return emotion with highest average probability
+        if avg_probs:
+            return max(avg_probs, key=avg_probs.get)
+        return 'neutral'
     
     def draw_seat_zones(self, frame: np.ndarray, show_labels: bool = True) -> np.ndarray:
         """Draw seat zone boundaries on frame."""

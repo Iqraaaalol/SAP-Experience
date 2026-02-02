@@ -107,7 +107,7 @@ class CVStreamProcessor:
                         face_landmarks[:, 1] -= y1
                     
                     if face_img.size > 0:
-                        emotion, conf, _ = self.detector.emotion_detector.detect_emotion(
+                        emotion, conf, emotion_probs = self.detector.emotion_detector.detect_emotion(
                             face_img, face_landmarks
                         )
                         face_id = self.get_face_id(box)
