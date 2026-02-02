@@ -10,24 +10,28 @@ import time
 import config
 from data_preprocessing import get_data_loaders
 
+# Early stopping configuration
+EARLY_STOPPING_PATIENCE = 7
+GRAD_CLIP_MAX_NORM = 1.0
+
 def create_model(num_classes, pretrained=True, load_from_checkpoint=None):
     """
-    Initialize ConvNeXt-Base model.
+    Initialize ConvNeXt-Tiny model.
     Args:
         num_classes: Number of output classes
         pretrained: If True and load_from_checkpoint is None, load ImageNet weights
         load_from_checkpoint: Path to checkpoint file to load model weights from
     """
-    print(f"Initializing ConvNeXt-Base with {num_classes} output classes...")
+    print(f"Initializing ConvNeXt-Tiny with {num_classes} output classes...")
     
     # Load model with weights enum if available in newer torchvision
     try:
-        from torchvision.models import ConvNeXt_Base_Weights
-        weights = ConvNeXt_Base_Weights.DEFAULT if (pretrained and load_from_checkpoint is None) else None
-        model = models.convnext_base(weights=weights)
+        from torchvision.models import ConvNeXt_Tiny_Weights
+        weights = ConvNeXt_Tiny_Weights.DEFAULT if (pretrained and load_from_checkpoint is None) else None
+        model = models.convnext_tiny(weights=weights)
     except ImportError:
         # Fallback for older torchvision versions
-        model = models.convnext_base(pretrained=(pretrained and load_from_checkpoint is None))
+        model = models.convnext_tiny(pretrained=(pretrained and load_from_checkpoint is None))
     
     # Modify classifier for our number of classes
     # ConvNeXt's classifier is Sequential: [LayerNorm, Flatten, Linear]
@@ -86,18 +90,21 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler=None):
         
         # Forward pass (Mixed Precision if scaler provided)
         if scaler:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast(device_type='cuda'):
                 outputs = model(images)
                 loss = criterion(outputs, labels)
             
             # Backward pass with scaler
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_MAX_NORM)
             scaler.step(optimizer)
             scaler.update()
         else:
             outputs = model(images)
             loss = criterion(outputs, labels)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_MAX_NORM)
             optimizer.step()
             
         # Statistics
@@ -136,7 +143,7 @@ def validate(model, loader, criterion):
 def main():
     # 1. Setup Data
     print("Setting up data loaders...")
-    train_loader, val_loader, _, class_names = get_data_loaders()
+    train_loader, val_loader, test_loader, class_names = get_data_loaders()
     
     if train_loader is None:
         return
@@ -167,6 +174,7 @@ def main():
         print("Training mode: Standard (all layers trainable)\n")
     
     best_acc = 0.0
+    epochs_without_improvement = 0
     
     # ============= STANDARD TRAINING (From Scratch or No Freezing) =============
     if not use_two_phase:
@@ -176,7 +184,7 @@ def main():
         
         optimizer = optim.AdamW(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.NUM_EPOCHS)
-        scaler = torch.cuda.amp.GradScaler() if config.DEVICE.type == 'cuda' else None
+        scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
         
         for epoch in range(config.NUM_EPOCHS):
             print(f"\nEpoch {epoch+1}/{config.NUM_EPOCHS}")
@@ -191,6 +199,7 @@ def main():
             
             if val_acc > best_acc:
                 best_acc = val_acc
+                epochs_without_improvement = 0
                 save_path = os.path.join(config.CHECKPOINT_DIR, config.BEST_MODEL_PATH)
                 torch.save({
                     'epoch': epoch,
@@ -200,6 +209,11 @@ def main():
                     'class_names': class_names
                 }, save_path)
                 print(f"Checkpointed best model to {save_path}")
+            else:
+                epochs_without_improvement += 1
+                if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
+                    print(f"\nEarly stopping triggered after {epoch+1} epochs (no improvement for {EARLY_STOPPING_PATIENCE} epochs)")
+                    break
     
     # ============= TWO-PHASE TRAINING (Fine-tuning with Frozen Backbone) =============
     # ============= PHASE 1: Frozen Backbone Training =============
@@ -217,7 +231,7 @@ def main():
                                weight_decay=config.WEIGHT_DECAY)
         
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.FREEZE_BACKBONE_EPOCHS)
-        scaler = torch.cuda.amp.GradScaler() if config.DEVICE.type == 'cuda' else None
+        scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
         
         for epoch in range(config.FREEZE_BACKBONE_EPOCHS):
             print(f"\nEpoch {epoch+1}/{config.FREEZE_BACKBONE_EPOCHS}")
@@ -232,6 +246,7 @@ def main():
             
             if val_acc > best_acc:
                 best_acc = val_acc
+                epochs_without_improvement = 0
                 save_path = os.path.join(config.CHECKPOINT_DIR, "affectnet_" + config.BEST_MODEL_PATH)
                 torch.save({
                     'epoch': epoch,
@@ -242,6 +257,8 @@ def main():
                     'phase': 'frozen'
                 }, save_path)
                 print(f"Checkpointed best model to {save_path}")
+            else:
+                epochs_without_improvement += 1
     
         # ============= PHASE 2: Full Fine-tuning with Differential LR =============
         remaining_epochs = config.NUM_EPOCHS - config.FREEZE_BACKBONE_EPOCHS
@@ -271,7 +288,8 @@ def main():
             ], weight_decay=config.WEIGHT_DECAY)
             
             scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=remaining_epochs)
-            scaler = torch.cuda.amp.GradScaler() if config.DEVICE.type == 'cuda' else None
+            scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
+            epochs_without_improvement = 0  # Reset for Phase 2
             
             for epoch in range(remaining_epochs):
                 current_epoch = config.FREEZE_BACKBONE_EPOCHS + epoch + 1
@@ -287,6 +305,7 @@ def main():
                 
                 if val_acc > best_acc:
                     best_acc = val_acc
+                    epochs_without_improvement = 0
                     save_path = os.path.join(config.CHECKPOINT_DIR, "affectnet_" + config.BEST_MODEL_PATH)
                     torch.save({
                         'epoch': current_epoch,
@@ -297,9 +316,35 @@ def main():
                         'phase': 'unfrozen'
                     }, save_path)
                     print(f"Checkpointed best model to {save_path}")
+                else:
+                    epochs_without_improvement += 1
+                    if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
+                        print(f"\nEarly stopping triggered after {current_epoch} epochs (no improvement for {EARLY_STOPPING_PATIENCE} epochs)")
+                        break
+
+    # ============= FINAL TEST SET EVALUATION =============
+    print(f"\n{'='*60}")
+    print("Evaluating on test set...")
+    print("="*60)
+    
+    # Load best model for final evaluation
+    if use_two_phase:
+        best_model_path = os.path.join(config.CHECKPOINT_DIR, "affectnet_" + config.BEST_MODEL_PATH)
+    else:
+        best_model_path = os.path.join(config.CHECKPOINT_DIR, config.BEST_MODEL_PATH)
+    
+    if os.path.exists(best_model_path):
+        checkpoint = torch.load(best_model_path, map_location=config.DEVICE)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded best model from {best_model_path}")
+    
+    test_loss, test_acc = validate(model, test_loader, criterion)
+    print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.2f}%")
 
     print(f"\n{'='*60}")
-    print(f"Training complete! Best validation accuracy: {best_acc:.2f}%")
+    print(f"Training complete!")
+    print(f"Best validation accuracy: {best_acc:.2f}%")
+    print(f"Final test accuracy: {test_acc:.2f}%")
     print(f"{'='*60}")
 
 if __name__ == "__main__":

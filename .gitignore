@@ -189,3 +189,4 @@ data/
 checkpoints/best_convnext_base.pth
 clip.mp4
 confusion_matrix.png
+computer-vision/seat_calibration.json
