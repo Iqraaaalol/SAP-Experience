@@ -190,3 +190,5 @@ checkpoints/best_convnext_base.pth
 clip.mp4
 confusion_matrix.png
 computer-vision/seat_calibration.json
+knowledge_base/wikivoyage.xml
+knowledge_base/wikivoyage.xml.bz2
