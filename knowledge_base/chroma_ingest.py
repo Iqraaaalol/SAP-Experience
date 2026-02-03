@@ -7,7 +7,7 @@ import os
 load_dotenv()
 
 # Parse your WikiVoyage XML dump
-processor = WikiVoyageProcessor("wikivoyage_2025_12_01.xml")
+processor = WikiVoyageProcessor("wikivoyage.xml")
 pages = processor.parse_xml()  # Extract destination pages
 chunks = processor.chunk_content()  # Create searchable chunks
 

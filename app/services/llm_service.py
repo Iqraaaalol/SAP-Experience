@@ -30,7 +30,20 @@ SERVICE_TOOL = {
                     'description': 'Priority level. Use "high" for medical emergencies, "low" for entertainment, "medium" for everything else.'
                 }
             },
-            'required': ['service_type', 'details', 'priority']
+            
+        }
+    }
+}
+
+# Default fallback tool to prevent the model from inventing tools.
+DEFAULT_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'default_tool',
+        'description': 'Fallback tool. The model should select this when none of the service tools apply; indicates no crew action is needed.',
+        'parameters': {
+            'type': 'object',
+            'properties': {}
         }
     }
 }
@@ -39,43 +52,50 @@ SERVICE_TOOL = {
 class LlamaInterface:
     """Interface to interact with Ollama LLM."""
     
-    def __init__(self, ollama_url: str = OLLAMA_URL, model_name: str = MODEL_NAME):
+    def __init__(self, ollama_url: str = OLLAMA_URL, model_name: str = MODEL_NAME, max_concurrency: int = 4):
         self.ollama_url = ollama_url
         self.model_name = model_name
         self.client = Client(host=ollama_url)
+        self._sema = asyncio.Semaphore(max_concurrency)
         print(f"LlamaInterface initialized")
         print(f"   Model: {self.model_name}")
         print(f"   URL: {self.ollama_url}")
     
     async def generate_response(self, prompt: str, temperature: float = 0.7) -> str:
-        """Query model using Ollama library."""
-        try:
-            print(f"Querying model: {self.model_name}")
-            
-            loop = asyncio.get_event_loop()
-            
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.generate(
-                    model=self.model_name,
-                    prompt=prompt,
-                    options={
-                        "temperature": 0.1,        
-                        "top_p": 0.6,
-                        "top_k": 3
-                    },
-                    keep_alive=-1,
-                    stream=False
-                )
-            )
-            
-            answer = response['response'].strip()
-            print(f"Got response: {answer[:50]}...")
-            return answer
-        
-        except Exception as e:
-            print(f"Error: {e}")
-            return f"Sorry, an error occurred: {str(e)}"
+        """Query model using Ollama library with retries and concurrency control."""
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"Querying model: {self.model_name} (attempt {attempt})")
+                async with self._sema:
+                    response = await asyncio.to_thread(
+                        lambda: Client(host=self.ollama_url).generate(
+                            model=self.model_name,
+                            prompt=prompt,
+                            options={
+                                "temperature": float(temperature),
+                                "top_p": 0.6,
+                                "top_k": 3
+                            },
+                            stream=False
+                        )
+                    )
+
+                # Attempt to extract answer safely
+                answer = response.get('response') if isinstance(response, dict) else getattr(response, 'response', None)
+                if not answer:
+                    answer = str(response)
+                answer = answer.strip()
+                print(f"Got response: {answer[:120]}")
+                return answer
+
+            except Exception as e:
+                print(f"generate_response attempt {attempt} failed: {e}")
+                if attempt < max_retries:
+                    backoff = 0.5 * (2 ** (attempt - 1))
+                    await asyncio.sleep(backoff)
+                    continue
+                return f"Sorry, an error occurred: {str(e)}"
 
     async def detect_service_with_tools(self, query: str, language: str = "en") -> dict | None:
         """
@@ -85,46 +105,76 @@ class LlamaInterface:
             dict with service details if service detected, None otherwise
         """
         try:
-            loop = asyncio.get_event_loop()
-            
-            system_prompt = """You are Avia, an assistant on a flydubai aircraft in the air. You have NO knowledge about in-flight services or crew operations.
-Your job is to determine if the passenger needs an in-flight service from the cabin crew.
+            system_prompt = """You are Avia, a helpful assistant on a flydubai aircraft in the air. 
 
-ONLY use the request_service function if the passenger is asking for something the cabin crew can physically provide, such as:
+You CAN answer:
+- Questions about yourself (your name is Avia)
+- General conversation, greetings, and pleasantries
+- Travel information, destination tips, and cultural questions
+- Flight information, duration, and general aviation topics
+- Entertainment and casual chat
+
+You have NO knowledge about THIS SPECIFIC FLIGHT'S services, crew, or real-time operations.
+
+CRITICAL: ONLY use the request_service function when a passenger explicitly requests a physical item or crew assistance:
 - Beverages (water, coffee, tea, juice, soda, wine, beer)
 - Food (meals, snacks, sandwiches)
 - Comfort items (blanket, pillow)
-- Medical assistance (feeling sick, dizzy, need medication)
-- General crew assistance (help with seat, overhead bin)
-- Entertainment (headphones, WiFi issues, screen not working)
+- Medical assistance (feeling sick, need medication)
+- Crew help (seat adjustment, overhead bin, call button)
+- Entertainment hardware (headphones, screen issues)
 
-DO NOT use the function for:
-- Questions about destinations, travel tips, culture, or things to do
-- General conversation or greetings
-- Questions about flight duration, arrival time, or flight info
-- Any informational queries
+DO NOT use request_service for:
+- Questions or conversation (even about services)
+- "What's your name?" "How are you?" "Thank you" "Goodbye", or questions relating to YOU
+- "Tell me about Dubai" or any informational queries
+- Anything that doesn't require immediate crew action
 
-If unsure, DO NOT call the function - just respond normally."""
+DEFAULT BEHAVIOR: Answer directly. Only call the function when the passenger clearly wants something RIGHT NOW from the crew.
+
+Examples:
+User: "What's your name?" → Answer: "I'm Avia, your in-flight assistant!"
+User: "Can I get some water?" → Call: request_service("water")
+User: "What drinks are available?" → Answer: request_service("Information")
+User: "I'd like a coffee" → Call: request_service("coffee")
+"""
 
             messages = [
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': query}
             ]
             
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat(
-                    model=self.model_name,
-                    messages=messages,
-                    tools=[SERVICE_TOOL],
-                    options={"temperature": 0.1},
-                    stream=False
-                )
-            )
+            # Use a small retry loop to avoid transient Ollama runner restarts
+            max_retries = 3
+            response = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    print(f"Detect service attempt {attempt}")
+                    async with self._sema:
+                        response = await asyncio.to_thread(
+                            lambda: Client(host=self.ollama_url).chat(
+                                model=self.model_name,
+                                messages=messages,
+                                tools=[SERVICE_TOOL, DEFAULT_TOOL],
+                                options={"temperature": 0.1},
+                                stream=False
+                            )
+                        )
+                    break
+                except Exception as e:
+                    print(f"detect_service_with_tools attempt {attempt} failed: {e}")
+                    if attempt < max_retries:
+                        backoff = 0.5 * (2 ** (attempt - 1))
+                        await asyncio.sleep(backoff)
+                        continue
+                    print(f"Tool detection error after retries: {e}")
+                    return None
             
             # Check if model called the service tool
             if response.message.tool_calls:
                 tool_call = response.message.tool_calls[0]
+                # If the model selected the request_service tool, handle it.
+                # If it selected the default_tool or any other tool, treat as no-service.
                 if tool_call.function.name == 'request_service':
                     args = tool_call.function.arguments
                     print(f"🔧 Tool call detected: {args}")
@@ -167,6 +217,11 @@ If unsure, DO NOT call the function - just respond normally."""
                         'message': message
                     }
             
+                else:
+                    # Model chose default or another tool (fallback) — do not treat as service.
+                    print(f"[LLM Service] Non-service tool selected: {tool_call.function.name}; treating as no-service")
+                    return None
+
             return None
             
         except Exception as e:
