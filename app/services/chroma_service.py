@@ -136,7 +136,7 @@ def build_context_from_chroma(chroma_manager: ChromaManager,
 
         CRITICAL LANGUAGE INSTRUCTION:
         - You MUST respond entirely in {language_name}.
-        - All text, explanations, and formatting must be in {language_name}.
+        - All text and explanations must be in {language_name}.
         - Do not mix languages - use only {language_name} throughout your response.S
         - If passenger uses romanized {language_name}, respond in romanized {language_name} as well.
 
@@ -163,12 +163,12 @@ def build_context_from_chroma(chroma_manager: ChromaManager,
         - Use headers (## or ###) for section titles
         - Add line breaks between paragraphs for readability
         - Use > for important notes or tips
+        - Use these formatting instructions according to {language_name}
         - Format your response in Markdown for better readability
 
         {kb_section}
 
         INSTRUCTIONS FOR RESPONSES:
-        - Be warm and welcoming but keep responses concise 
         - Use the Chroma knowledge base above as your primary reference
         - Avoid fabricating details about businesses, venues, or services
         - If unsure, admit lack of specific details rather than fabricating
