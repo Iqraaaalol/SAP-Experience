@@ -7,11 +7,18 @@ from torch.utils.data import DataLoader, Subset
 
 import config
 
+
+class ConvertToRGB:
+    """Convert grayscale images to RGB, leave RGB images unchanged."""
+    def __call__(self, img):
+        if img.mode == 'L':  # Grayscale
+            return img.convert('RGB')
+        elif img.mode == 'RGBA':  # RGBA (with alpha channel)
+            return img.convert('RGB')
+        return img  # Already RGB
+
+
 def get_transforms():
-    """
-    Returns training and validation data transforms.
-    EfficientNet-B3 requires specific normalization and resizing.
-    """
     # ImageNet normalization statistics
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
@@ -19,6 +26,7 @@ def get_transforms():
     )
 
     train_transforms = transforms.Compose([
+        ConvertToRGB(),  # Handle both grayscale (FER2013) and RGB (AffectNet)
         transforms.Resize(config.INPUT_SIZE),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
@@ -28,6 +36,7 @@ def get_transforms():
     ])
 
     val_transforms = transforms.Compose([
+        ConvertToRGB(),  # Handle both grayscale (FER2013) and RGB (AffectNet)
         transforms.Resize(config.INPUT_SIZE),
         transforms.ToTensor(),
         normalize
@@ -56,10 +65,19 @@ def _split_indices(dataset_size: int, val_split: float) -> Tuple[List[int], List
     return train_indices, val_indices
 
 
-def get_data_loaders(data_dir=config.DATA_DIR, batch_size=config.BATCH_SIZE, num_workers=config.NUM_WORKERS):
-    """Create DataLoaders for ImageFolder-based datasets."""
-    train_dir = config.TRAIN_DIR
-    test_dir = config.TEST_DIR
+def get_data_loaders(data_dir=None, batch_size=config.BATCH_SIZE, num_workers=config.NUM_WORKERS):
+    """Create DataLoaders for ImageFolder-based datasets.
+    
+    Args:
+        data_dir: Base data directory. If None, uses config.DATA_DIR.
+        batch_size: Batch size for data loaders.
+        num_workers: Number of worker processes for data loading.
+    """
+    if data_dir is None:
+        data_dir = config.DATA_DIR
+    
+    train_dir = os.path.join(data_dir, "train")
+    test_dir = os.path.join(data_dir, "test")
 
     if not os.path.isdir(train_dir) or not os.path.isdir(test_dir):
         print(f"Dataset folders not found. Expected '{train_dir}' and '{test_dir}'.")
@@ -102,7 +120,8 @@ def get_data_loaders(data_dir=config.DATA_DIR, batch_size=config.BATCH_SIZE, num
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers
+        num_workers=num_workers,
+        pin_memory=True
     )
 
     return train_loader, val_loader, test_loader, class_names
