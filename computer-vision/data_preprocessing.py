@@ -26,17 +26,45 @@ def get_transforms():
     )
 
     train_transforms = transforms.Compose([
-        ConvertToRGB(),  # Handle both grayscale (FER2013) and RGB (AffectNet)
-        transforms.Resize(config.INPUT_SIZE),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
+        ConvertToRGB(),  
+        # Random resized crop: simulate varying distances and partial faces
+        transforms.RandomResizedCrop(config.INPUT_SIZE, scale=(0.7, 1.0), ratio=(0.9, 1.1)),
+        
+        # Random horizontal flip: faces are symmetric
+        transforms.RandomHorizontalFlip(p=0.5),
+        
+        # Random rotation: heads tilted to look up at elevated camera (15-30° angle)
+        transforms.RandomRotation(degrees=15),
+        
+        # Random affine: simulate head movement and slight distance changes
+        transforms.RandomAffine(
+            degrees=0,
+            translate=(0.1, 0.1),  # Horizontal/vertical shifts
+            scale=(0.9, 1.1),      # Zoom in/out
+        ),
+        
+        # Random perspective: critical for elevated camera angle (15-30° downward)
+        transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+        
+        # Color jitter: lighting variations in cabin environment
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.15, hue=0.05),
+        
+        # Random grayscale: helps bridge FER2013 (grayscale) and AffectNet (RGB) domain gap
+        transforms.RandomGrayscale(p=0.1),
+        
+        # Gaussian blur: simulate slight defocus at 1-2m distance
+        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5)),
+        
         transforms.ToTensor(),
+        
+        # Random erasing: simulate occlusions (hands, hair, objects)
+        transforms.RandomErasing(p=0.2, scale=(0.02, 0.15), ratio=(0.3, 3.3)),
+        
         normalize
     ])
 
     val_transforms = transforms.Compose([
-        ConvertToRGB(),  # Handle both grayscale (FER2013) and RGB (AffectNet)
+        ConvertToRGB(),  
         transforms.Resize(config.INPUT_SIZE),
         transforms.ToTensor(),
         normalize

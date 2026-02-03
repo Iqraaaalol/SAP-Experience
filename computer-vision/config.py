@@ -48,7 +48,7 @@ TRAIN_DIR = FER_TRAIN_DIR
 TEST_DIR = FER_TEST_DIR
 
 CHECKPOINT_DIR = "checkpoints"
-BEST_MODEL_PATH = "best_convnext_tiny.pth"
+BEST_MODEL_PATH = "best_convnext_base.pth"
 FER_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "best_convnext_tiny.pth")  # Path to FER-trained model
 
 # Seat Configuration (for mood_detection.py)
