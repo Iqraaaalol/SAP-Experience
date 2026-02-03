@@ -7,11 +7,18 @@ from torch.utils.data import DataLoader, Subset
 
 import config
 
+
+class ConvertToRGB:
+    """Convert grayscale images to RGB, leave RGB images unchanged."""
+    def __call__(self, img):
+        if img.mode == 'L':  # Grayscale
+            return img.convert('RGB')
+        elif img.mode == 'RGBA':  # RGBA (with alpha channel)
+            return img.convert('RGB')
+        return img  # Already RGB
+
+
 def get_transforms():
-    """
-    Returns training and validation data transforms.
-    EfficientNet-B3 requires specific normalization and resizing.
-    """
     # ImageNet normalization statistics
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
@@ -19,6 +26,7 @@ def get_transforms():
     )
 
     train_transforms = transforms.Compose([
+        ConvertToRGB(),  # Handle both grayscale (FER2013) and RGB (AffectNet)
         transforms.Resize(config.INPUT_SIZE),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
@@ -28,6 +36,7 @@ def get_transforms():
     ])
 
     val_transforms = transforms.Compose([
+        ConvertToRGB(),  # Handle both grayscale (FER2013) and RGB (AffectNet)
         transforms.Resize(config.INPUT_SIZE),
         transforms.ToTensor(),
         normalize
