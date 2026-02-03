@@ -153,7 +153,28 @@
         function VideoFeed({ videoUrl = "/video_feed" }) {
             const [isLoading, setIsLoading] = useState(true);
             const [hasError, setHasError] = useState(false);
+            const [seatData, setSeatData] = useState(null);
             const imgRef = useRef(null);
+
+            // Fetch seat calibration data
+            useEffect(() => {
+                const fetchSeatData = async () => {
+                    try {
+                        const response = await fetch('/api/seats');
+                        if (response.ok) {
+                            const data = await response.json();
+                            setSeatData(data);
+                            console.log('Seat calibration loaded:', data);
+                        }
+                    } catch (error) {
+                        console.error('Failed to fetch seat data:', error);
+                    }
+                };
+                
+                fetchSeatData();
+                const interval = setInterval(fetchSeatData, 2000); // Refresh every 2s
+                return () => clearInterval(interval);
+            }, []);
 
             const handleLoad = () => {
                 setIsLoading(false);
@@ -174,6 +195,53 @@
                             <span>{!isLoading && !hasError ? 'LIVE' : hasError ? 'Disconnected' : 'Connecting...'}</span>
                         </div>
                     </div>
+                    
+                    {/* Seat Grid Status */}
+                    {seatData && seatData.seats && Object.keys(seatData.seats).length > 0 && (
+                        <div style={{
+                            background: 'rgba(0,0,0,0.3)',
+                            padding: '12px',
+                            borderRadius: '8px',
+                            marginBottom: '12px'
+                        }}>
+                            <div style={{
+                                fontSize: '14px',
+                                fontWeight: '600',
+                                marginBottom: '8px',
+                                color: '#00ff00'
+                            }}>
+                                🪑 Seat Status ({Object.keys(seatData.seats).length} seats calibrated)
+                            </div>
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                                gap: '8px'
+                            }}>
+                                {Object.entries(seatData.seats).map(([seatId, seat]) => (
+                                    <div key={seatId} style={{
+                                        background: seat.occupied ? 'rgba(0,255,0,0.1)' : 'rgba(128,128,128,0.1)',
+                                        border: `2px solid ${seat.occupied ? '#00ff00' : '#666'}`,
+                                        borderRadius: '6px',
+                                        padding: '8px',
+                                        fontSize: '13px'
+                                    }}>
+                                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>
+                                            {seat.occupied ? '●' : '○'} {seatId}
+                                        </div>
+                                        {seat.occupied && seat.emotion && (
+                                            <div style={{ fontSize: '11px', color: '#aaa' }}>
+                                                {seat.emotion} ({Math.round(seat.confidence * 100)}%)
+                                            </div>
+                                        )}
+                                        {!seat.occupied && (
+                                            <div style={{ fontSize: '11px', color: '#666' }}>Vacant</div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    
                     <div className="video-wrapper">
                         {isLoading && (
                             <div className="video-overlay">
