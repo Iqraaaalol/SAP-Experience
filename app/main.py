@@ -64,11 +64,35 @@ class CVStreamProcessor:
         # Import CV modules
         sys.path.insert(0, str(Path(__file__).parent.parent / "computer-vision"))
         from mood_detection import FaceDetector
+        from seat_manager import SeatManager
         
         self.detector = FaceDetector()
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        
+        # Get actual dimensions
+        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Create seat manager and try to load calibration
+        self.seat_manager = SeatManager(
+            self.frame_width, 
+            self.frame_height,
+            auto_load_calibration=False
+        )
+        
+        calibration_path = Path(__file__).parent.parent / "computer-vision" / "seat_calibration.json"
+        if calibration_path.exists():
+            print(f"📍 Loading seat calibration from {calibration_path}")
+            if self.seat_manager.load_calibration(str(calibration_path)):
+                print(f"✅ Seat manager loaded with {len(self.seat_manager.seats)} seats")
+            else:
+                print(f"⚠️  Failed to load calibration, using default grid")
+                self.seat_manager._generate_grid_zones()
+        else:
+            print(f"⚠️  No calibration found at {calibration_path}, using default grid")
+            self.seat_manager._generate_grid_zones()
         
         self.emotion_update_interval = 0.3
         self.last_emotion_update = time.time()
@@ -88,10 +112,15 @@ class CVStreamProcessor:
         boxes, probs, landmarks = self.detector.detect_faces(frame)
         
         emotions_list = []
+        seat_assignments = {}
+        seat_emotions = {}
         current_time = time.time()
         current_face_ids = set()
         
         if boxes is not None and len(boxes) > 0:
+            # Update seat assignments (pass frame for embedding extraction)
+            seat_assignments = self.seat_manager.update_seats(boxes, frame, current_time)
+            
             # Update emotions if interval passed
             if (current_time - self.last_emotion_update) > self.emotion_update_interval:
                 for i, box in enumerate(boxes):
@@ -113,13 +142,26 @@ class CVStreamProcessor:
                         face_id = self.get_face_id(box)
                         self.cached_emotions[face_id] = (emotion, conf)
                         current_face_ids.add(face_id)
+                        
+                        # Update seat manager with emotion
+                        for seat_id, (assigned_idx, _) in seat_assignments.items():
+                            if assigned_idx == i:
+                                self.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
+                                seat_emotions[seat_id] = (emotion, conf)
                 
                 self.last_emotion_update = current_time
             else:
+                # Use cached emotions
                 for box in boxes:
                     current_face_ids.add(self.get_face_id(box))
+                
+                # Build seat_emotions from seat manager
+                for seat_id in seat_assignments.keys():
+                    seat = self.seat_manager.seats.get(seat_id)
+                    if seat and seat.current_emotion:
+                        seat_emotions[seat_id] = (seat.current_emotion, seat.current_confidence)
             
-            # Build emotions list from cache
+            # Build emotions list from cache for drawing
             for box in boxes:
                 face_id = self.get_face_id(box)
                 if face_id in self.cached_emotions:
@@ -131,10 +173,20 @@ class CVStreamProcessor:
             self.cached_emotions = {k: v for k, v in self.cached_emotions.items() 
                                    if k in current_face_ids}
         else:
+            # No faces detected - update seat manager with empty boxes
+            self.seat_manager.update_seats(None, frame, current_time)
             self.cached_emotions.clear()
         
-        # Draw detection boxes and info
-        frame = self.detector.draw_enhanced_boxes(frame, boxes, probs, landmarks, emotions_list)
+        # Draw detection boxes and seat assignments
+        frame = self.detector.draw_enhanced_boxes(
+            frame, boxes, probs, landmarks, 
+            seat_assignments=seat_assignments,
+            emotions=seat_emotions
+        )
+        
+        # Draw seat zones overlay
+        frame = self.seat_manager.draw_seat_zones(frame)
+        
         frame = self.detector.add_dashboard(frame, boxes, probs)
         
         return frame
@@ -543,6 +595,37 @@ async def clear_crew_alerts(acknowledged_only: bool = True):
     else:
         count = crew_manager.clear_all_alerts()
         return {"status": "success", "message": f"Cleared all {count} alerts"}
+
+
+@app.get("/api/seats")
+async def get_seat_status():
+    """Get seat calibration data and current seat status."""
+    if camera is None or not hasattr(camera, 'seat_manager'):
+        return {
+            "error": "Camera or seat manager not available",
+            "seats": {}
+        }
+    
+    seat_manager = camera.seat_manager
+    seat_summary = seat_manager.get_seat_summary()
+    
+    # Add calibration zones
+    calibration_data = {
+        "frame_width": seat_manager.frame_width,
+        "frame_height": seat_manager.frame_height,
+        "seats": {}
+    }
+    
+    for seat_id, seat_state in seat_manager.seats.items():
+        calibration_data["seats"][seat_id] = {
+            "zone": list(seat_state.zone),
+            "polygon": [list(p) for p in seat_state.polygon] if seat_state.polygon else None,
+            "occupied": seat_summary[seat_id]["occupied"],
+            "emotion": seat_summary[seat_id]["emotion"],
+            "confidence": seat_state.current_confidence if seat_state.is_occupied else 0.0
+        }
+    
+    return calibration_data
 
 #=============================================================================
 # ROUTES - CV Video Stream

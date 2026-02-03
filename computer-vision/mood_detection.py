@@ -48,7 +48,7 @@ def run_calibration(video_source, width, height, num_seats):
 
 
 class ConvNeXtEmotionDetector:
-    def __init__(self, model_path="checkpoints/best_convnext_tiny.pth", num_classes=None, class_names=None):
+    def __init__(self, model_path="checkpoints/best_convnext_base.pth", num_classes=None, class_names=None):
         self.device = config.DEVICE
         num_classes = num_classes or getattr(config, 'NUM_CLASSES', 7)
         base_colors = {
@@ -147,12 +147,12 @@ class ConvNeXtEmotionDetector:
         return aligned
         
     def _load_model(self, model_path, num_classes):
-        print(f"Loading ConvNeXt-Tiny from {model_path}...")
+        print(f"Loading ConvNeXt-Base from {model_path}...")
         try:
-            from torchvision.models import ConvNeXt_Tiny_Weights
-            model = models.convnext_tiny(weights=None)
+            from torchvision.models import ConvNeXt_Base_Weights
+            model = models.convnext_base(weights=None)
         except ImportError:
-            model = models.convnext_tiny(pretrained=False)
+            model = models.convnext_base(pretrained=False)
             
         # Re-create classifier head
         in_features = model.classifier[2].in_features
