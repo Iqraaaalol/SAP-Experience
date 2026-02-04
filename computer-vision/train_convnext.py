@@ -16,22 +16,22 @@ GRAD_CLIP_MAX_NORM = 1.0
 
 def create_model(num_classes, pretrained=True, load_from_checkpoint=None):
     """
-    Initialize ConvNeXt-Tiny model.
+    Initialize ConvNeXt-Base model.
     Args:
         num_classes: Number of output classes
         pretrained: If True and load_from_checkpoint is None, load ImageNet weights
         load_from_checkpoint: Path to checkpoint file to load model weights from
     """
-    print(f"Initializing ConvNeXt-Tiny with {num_classes} output classes...")
+    print(f"Initializing ConvNeXt-Base with {num_classes} output classes...")
     
     # Load model with weights enum if available in newer torchvision
     try:
-        from torchvision.models import ConvNeXt_Tiny_Weights
-        weights = ConvNeXt_Tiny_Weights.DEFAULT if (pretrained and load_from_checkpoint is None) else None
-        model = models.convnext_tiny(weights=weights)
+        from torchvision.models import ConvNeXt_Base_Weights
+        weights = ConvNeXt_Base_Weights.DEFAULT if (pretrained and load_from_checkpoint is None) else None
+        model = models.convnext_base(weights=weights)
     except ImportError:
         # Fallback for older torchvision versions
-        model = models.convnext_tiny(pretrained=(pretrained and load_from_checkpoint is None))
+        model = models.convnext_base(pretrained=(pretrained and load_from_checkpoint is None))
     
     # Modify classifier for our number of classes
     # ConvNeXt's classifier is Sequential: [LayerNorm, Flatten, Linear]
@@ -287,7 +287,12 @@ def main():
                 {'params': classifier_params, 'lr': config.CLASSIFIER_LR}
             ], weight_decay=config.WEIGHT_DECAY)
             
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=remaining_epochs)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, 
+                mode='max',           # maximize validation accuracy
+                factor=0.5,           # reduce LR by half
+                patience=3            # wait 3 epochs before reducing
+            )
             scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
             epochs_without_improvement = 0  # Reset for Phase 2
             
@@ -298,7 +303,7 @@ def main():
                 train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, scaler)
                 val_loss, val_acc = validate(model, val_loader, criterion)
                 
-                scheduler.step()
+                scheduler.step(val_acc)
                 
                 print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
                 print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")

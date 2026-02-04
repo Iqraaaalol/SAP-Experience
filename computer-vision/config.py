@@ -15,11 +15,9 @@ WEIGHT_DECAY = 1e-4
 VAL_SPLIT = 0.1
 RANDOM_SEED = 42
 
-# Fine-tuning configuration (set FREEZE_BACKBONE_EPOCHS=0 for initial training)
-FREEZE_BACKBONE_EPOCHS = 0  # Set to 3 when fine-tuning on AffectNet
-BACKBONE_LR = 1e-5  # Lower learning rate for backbone after unfreezing
-CLASSIFIER_LR = 5e-5  # Higher learning rate for classifier head after unfreezing
-
+FREEZE_BACKBONE_EPOCHS = 3  # Set to 3 when fine-tuning on AffectNet
+BACKBONE_LR = 5e-5  
+CLASSIFIER_LR = 1e-4  
 # Model Configuration
 NUM_CLASSES = 7
 CLASS_NAMES = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
@@ -41,13 +39,13 @@ AFFECTNET_TEST_DIR = os.path.join(AFFECTNET_DATA_DIR, "test")
 
 # Active dataset (change this to switch between datasets)
 # Use FER for initial training, then switch to AFFECTNET for fine-tuning
-DATA_DIR = FER_DATA_DIR
-TRAIN_DIR = FER_TRAIN_DIR
-TEST_DIR = FER_TEST_DIR
+DATA_DIR = AFFECTNET_DATA_DIR
+TRAIN_DIR = AFFECTNET_TRAIN_DIR
+TEST_DIR = AFFECTNET_TEST_DIR
 
 CHECKPOINT_DIR = "checkpoints"
-BEST_MODEL_PATH = "best_convnext_base.pth"
-FER_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "best_convnext_tiny.pth")  # Path to FER-trained model
+BEST_MODEL_PATH = "affectnet_best_convnext_base.pth"
+FER_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "best_convnext_base.pth")  # Path to FER-trained model
 
 # Seat Configuration (for mood_detection.py)
 SEAT_GRID_ROWS = 2
