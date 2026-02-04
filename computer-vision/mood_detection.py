@@ -48,7 +48,7 @@ def run_calibration(video_source, width, height, num_seats):
 
 
 class ConvNeXtEmotionDetector:
-    def __init__(self, model_path="checkpoints/best_convnext_base.pth", num_classes=None, class_names=None):
+    def __init__(self, model_path="checkpoints/affectnet_best_convnext_base.pth", num_classes=None, class_names=None):
         self.device = config.DEVICE
         num_classes = num_classes or getattr(config, 'NUM_CLASSES', 7)
         base_colors = {
@@ -484,17 +484,17 @@ def main():
         if (current_time - last_emotion_update) > emotion_update_interval:
             if use_seats and seat_assignments:
                 for seat_id, (face_idx, box) in seat_assignments.items():
-                x1, y1, x2, y2 = box.astype(int)
-                face_img = frame[max(0, y1):min(frame.shape[0], y2), 
-                                max(0, x1):min(frame.shape[1], x2)]
-                
-                # Get landmarks for this face (if available)
-                face_landmarks = None
-                if landmarks is not None and face_idx < len(landmarks) and landmarks[face_idx] is not None:
-                    face_landmarks = landmarks[face_idx].copy()
-                    face_landmarks[:, 0] -= x1
-                    face_landmarks[:, 1] -= y1
-                
+                    x1, y1, x2, y2 = box.astype(int)
+                    face_img = frame[max(0, y1):min(frame.shape[0], y2), 
+                                    max(0, x1):min(frame.shape[1], x2)]
+                    
+                    # Get landmarks for this face (if available)
+                    face_landmarks = None
+                    if landmarks is not None and face_idx < len(landmarks) and landmarks[face_idx] is not None:
+                        face_landmarks = landmarks[face_idx].copy()
+                        face_landmarks[:, 0] -= x1
+                        face_landmarks[:, 1] -= y1
+                    
                     if face_img.size > 0:
                         emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
                         seat_emotions[seat_id] = (emotion, conf)
