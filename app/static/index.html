@@ -40,17 +40,17 @@
                         request in-flight services, or get travel tips in your preferred language.
                     </p>
                     <div class="quick-prompts">
-                        <button class="quick-prompt" @click="sendQuickPrompt('What are the top attractions?')">
-                            🏛️ Top attractions
+                        <button class="quick-prompt" @click="sendQuickPrompt(quickPrompts.attractions)">
+                            🏛️ {{ quickPrompts.attractions }}
                         </button>
-                        <button class="quick-prompt" @click="sendQuickPrompt('What local food should I try?')">
-                            🍜 Local cuisine
+                        <button class="quick-prompt" @click="sendQuickPrompt(quickPrompts.cuisine)">
+                            🍜 {{ quickPrompts.cuisine }}
                         </button>
-                        <button class="quick-prompt" @click="sendQuickPrompt('Can I get some water please?')">
-                            💧 Request water
+                        <button class="quick-prompt" @click="sendQuickPrompt(quickPrompts.water)">
+                            💧 {{ quickPrompts.water }}
                         </button>
-                        <button class="quick-prompt" @click="sendQuickPrompt('What\'s the weather like?')">
-                            🌤️ Weather info
+                        <button class="quick-prompt" @click="sendQuickPrompt(quickPrompts.weather)">
+                            🌤️ {{ quickPrompts.weather }}
                         </button>
                     </div>
                 </div>
@@ -181,6 +181,27 @@
             <span>{{ toast.icon }}</span>
             <span>{{ toast.message }}</span>
         </div>
+
+        <!-- Service Request Confirmation -->
+        <div v-if="showServiceConfirm" class="backdrop" @click="cancelServiceRequest"></div>
+        <div class="service-confirm" :class="{ open: showServiceConfirm }">
+            <div class="service-confirm-icon">🔔</div>
+            <h3 class="service-confirm-title">Service Request Detected</h3>
+            <p class="service-confirm-text">
+                Would you like to notify the crew about your request?
+            </p>
+            <div class="service-confirm-details" v-if="pendingService">
+                <strong>{{ pendingService.serviceType }}</strong>
+            </div>
+            <div class="service-confirm-actions">
+                <button class="service-confirm-btn cancel" @click="cancelServiceRequest">
+                    ✕ Just Answer
+                </button>
+                <button class="service-confirm-btn confirm" @click="confirmServiceRequest">
+                    ✓ Notify Crew
+                </button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -211,10 +232,22 @@
                 const messagesArea = ref(null);
                 const inputField = ref(null);
 
+                // Quick prompts (translated based on language)
+                const quickPrompts = ref({
+                    attractions: 'What are the top attractions?',
+                    cuisine: 'What local food should I try?',
+                    water: 'Can I get some water please?',
+                    weather: "What's the weather like?"
+                });
+
                 // Speech recognition
                 const speechSupported = ref(false);
                 const isListening = ref(false);
                 let recognition = null;
+
+                // Service request confirmation
+                const pendingService = ref(null);
+                const showServiceConfirm = ref(false);
 
                 // Computed
                 const canSend = computed(() => {
@@ -281,20 +314,27 @@
 
                         const data = await response.json();
                         
-                        // Parse markdown
-                        const htmlContent = marked.parse(data.answer || data.response || '');
+                        // Check if service was detected
+                        if (data.service_detected) {
+                            // Store pending service request
+                            pendingService.value = {
+                                query,
+                                serviceType: data.service_type,
+                                priority: data.priority
+                            };
+                            showServiceConfirm.value = true;
+                        } else {
+                            // Parse markdown for regular response
+                            const htmlContent = marked.parse(data.answer || data.response || '');
 
-                        messages.value.push({
-                            role: 'assistant',
-                            content: data.answer || data.response,
-                            html: htmlContent,
-                            timestamp: data.timestamp || new Date().toISOString(),
-                            fromCache: data.from_cache,
-                            serviceAlert: data.service_alert_sent
-                        });
-
-                        if (data.service_alert_sent) {
-                            showToast('Crew has been notified!', 'success', '✅');
+                            messages.value.push({
+                                role: 'assistant',
+                                content: data.answer || data.response,
+                                html: htmlContent,
+                                timestamp: data.timestamp || new Date().toISOString(),
+                                fromCache: data.from_cache,
+                                serviceAlert: data.service_alert_sent
+                            });
                         }
 
                     } catch (error) {
@@ -315,6 +355,111 @@
                 const sendQuickPrompt = (prompt) => {
                     inputText.value = prompt;
                     sendMessage();
+                };
+
+                const confirmServiceRequest = async () => {
+                    if (!pendingService.value) return;
+
+                    isLoading.value = true;
+                    showServiceConfirm.value = false;
+
+                    try {
+                        const response = await fetch('/api/service-request', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                query: pendingService.value.query,
+                                destination: destination.value,
+                                seatNumber: seatNumber.value,
+                                language: language.value
+                            })
+                        });
+
+                        const data = await response.json();
+                        const htmlContent = marked.parse(data.answer || '');
+
+                        messages.value.push({
+                            role: 'assistant',
+                            content: data.answer,
+                            html: htmlContent,
+                            timestamp: data.timestamp || new Date().toISOString(),
+                            serviceAlert: true
+                        });
+
+                        showToast('Crew has been notified!', 'success', '✅');
+                    } catch (error) {
+                        console.error('Error:', error);
+                        showToast('Failed to send service request.', 'error', '❌');
+                    }
+
+                    pendingService.value = null;
+                    isLoading.value = false;
+                    scrollToBottom();
+                };
+
+                const cancelServiceRequest = async () => {
+                    if (!pendingService.value) return;
+
+                    showServiceConfirm.value = false;
+                    isLoading.value = true;
+
+                    try {
+                        // Send as regular query - add context to avoid re-triggering service detection
+                        const response = await fetch('/api/query', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                query: 'Tell me about: ' + pendingService.value.query,
+                                destination: destination.value,
+                                seatNumber: seatNumber.value,
+                                language: language.value
+                            })
+                        });
+
+                        const data = await response.json();
+                        
+                        // Handle response even if service is re-detected
+                        if (data.service_detected) {
+                            // If still detected as service, try with explicit info request
+                            const retryResponse = await fetch('/api/query', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    query: 'What information can you give me about ' + pendingService.value.query + '? I just want to know, not request it.',
+                                    destination: destination.value,
+                                    seatNumber: seatNumber.value,
+                                    language: language.value
+                                })
+                            });
+                            const retryData = await retryResponse.json();
+                            if (retryData.answer) {
+                                const htmlContent = marked.parse(retryData.answer);
+                                messages.value.push({
+                                    role: 'assistant',
+                                    content: retryData.answer,
+                                    html: htmlContent,
+                                    timestamp: retryData.timestamp || new Date().toISOString(),
+                                    fromCache: retryData.from_cache
+                                });
+                            }
+                        } else {
+                            const htmlContent = marked.parse(data.answer || data.response || '');
+                            messages.value.push({
+                                role: 'assistant',
+                                content: data.answer || data.response,
+                                html: htmlContent,
+                                timestamp: data.timestamp || new Date().toISOString(),
+                                fromCache: data.from_cache
+                            });
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                        showToast('Failed to get response.', 'error', '❌');
+                    }
+
+                    pendingService.value = null;
+                    isLoading.value = false;
+                    scrollToBottom();
                 };
 
                 const clearChat = async () => {
@@ -368,14 +513,54 @@
                     }
                 };
 
+                // Translate quick prompts to current language
+                const translateQuickPrompts = async () => {
+                    if (language.value === 'en') {
+                        // Reset to English
+                        quickPrompts.value = {
+                            attractions: 'What are the top attractions?',
+                            cuisine: 'What local food should I try?',
+                            water: 'Can I get some water please?',
+                            weather: "What's the weather like?"
+                        };
+                        return;
+                    }
+
+                    try {
+                        const prompts = {
+                            attractions: 'What are the top attractions?',
+                            cuisine: 'What local food should I try?',
+                            water: 'Can I get some water please?',
+                            weather: "What's the weather like?"
+                        };
+
+                        // Translate each prompt
+                        for (const [key, text] of Object.entries(prompts)) {
+                            const response = await fetch('/api/translate', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ text, language: language.value })
+                            });
+                            const data = await response.json();
+                            quickPrompts.value[key] = data.translated;
+                        }
+                    } catch (error) {
+                        console.error('Failed to translate prompts:', error);
+                    }
+                };
+
                 // Watchers - persist settings
                 watch(seatNumber, (val) => localStorage.setItem('seatNumber', val));
                 watch(destination, (val) => localStorage.setItem('destination', val));
-                watch(language, (val) => localStorage.setItem('language', val));
+                watch(language, (val) => {
+                    localStorage.setItem('language', val);
+                    translateQuickPrompts();  // Translate quick prompts when language changes
+                });
 
                 // Lifecycle
                 onMounted(() => {
                     initSpeechRecognition();
+                    translateQuickPrompts();  // Translate prompts on load
                     inputField.value?.focus();
                 });
 
@@ -393,10 +578,15 @@
                     speechSupported,
                     isListening,
                     canSend,
+                    pendingService,
+                    showServiceConfirm,
+                    quickPrompts,
                     formatTime,
                     autoResize,
                     sendMessage,
                     sendQuickPrompt,
+                    confirmServiceRequest,
+                    cancelServiceRequest,
                     clearChat,
                     toggleSpeech
                 };

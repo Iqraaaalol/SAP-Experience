@@ -36,10 +36,10 @@ from services import (
     # Models
     QueryRequest,
     # Language
-    get_language_name, get_service_message, translate_to_english,
+    get_language_name, get_service_message, translate_to_english, translate_to_language,
     # Services
     crew_manager,
-    build_context_from_chroma, init_chroma_manager, get_chroma_manager,
+    build_context_from_chroma, init_chroma_manager, get_chroma_manager, get_translated_prompt,
     init_llm,
     query_cache, conversation_history,
     init_db, get_stats, log_query, log_conversation_message,
@@ -358,6 +358,19 @@ async def health_check():
     }
 
 
+@app.post("/api/translate")
+async def translate_text(request: dict):
+    """Translate text to target language."""
+    text = request.get('text', '')
+    target_language = request.get('language', 'en')
+    
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    
+    translated = await translate_to_language(text, target_language, Llama)
+    return {"translated": translated}
+
+
 @app.post("/api/query")
 async def handle_query(request: QueryRequest):
     """Handle passenger query with destination context."""
@@ -368,33 +381,13 @@ async def handle_query(request: QueryRequest):
     # Use LLM function calling to detect service requests
     service_request = await Llama.detect_service_with_tools(request.query, request.language)
     if service_request:
-        alert = {
-            'seatNumber': request.seatNumber,
-            'serviceType': service_request['serviceType'],
-            'message': request.query,  # Show the original passenger query
-            'priority': service_request['priority'],
-            'timestamp': datetime.now().isoformat()
-        }
-        await crew_manager.broadcast(alert)
-        print(f"🚨 Service request detected: {service_request['serviceType']} from seat {request.seatNumber}")
-        response_message = get_service_message(
-            request.language, 
-            service_request['serviceType'], 
-            request.seatNumber
-        )
-        # Persist conversation and query for auditing
-        try:
-            conversation_history.add_exchange(request.seatNumber, request.query, response_message)
-            await log_query(request.seatNumber, request.destination, request.query, response_message)
-            await log_conversation_message(request.seatNumber, 'user', request.query)
-            await log_conversation_message(request.seatNumber, 'assistant', response_message)
-        except Exception as e:
-            print(f"Error persisting service request conversation: {e}")
+        # Return service detection info without auto-sending
+        print(f"🔔 Service request detected: {service_request['serviceType']} from seat {request.seatNumber} (pending confirmation)")
         return {
-            "answer": response_message,
-            "destination": request.destination,
-            "from_cache": False,
-            "service_alert_sent": True,
+            "service_detected": True,
+            "service_type": service_request['serviceType'],
+            "priority": service_request['priority'],
+            "original_query": request.query,
             "timestamp": datetime.now().isoformat()
         }
     
@@ -454,24 +447,17 @@ async def handle_query(request: QueryRequest):
                         kb_lines.append(f"**{title}**:\n{content[:1024]}")
                     else:
                         kb_lines.append(f"- {d}")
-                kb_section = "\n\nKNOWLEDGE BASE:\n" + "\n\n".join(kb_lines)
-                context_prompt = f"""You are a helpful travel assistant. You MUST respond entirely in {language_name}.
-
-CONVERSATION CONTINUITY:
-- If the passenger sends a short reply like "yes", "no", "sure", "tell me more", look at the conversation history to understand what they're responding to.
-{conv_context}
-
-{kb_section}
-
-PASSENGER MESSAGE:
-"""
+                kb_section = "\n\n".join(kb_lines)
+                conv_section = conv_context if conv_context else ""
+                # Use fully translated prompt
+                context_prompt = get_translated_prompt(request.language, conv_section, kb_section)
         except Exception as e:
             print(f"KB lookup failed: {e}")
 
     if not context_prompt:
         raise HTTPException(status_code=400, detail=f"No knowledge base entries found for '{request.destination}' and no fallback available.")
 
-    full_prompt = f"{context_prompt}\n\n{request.query}\n\nAnswer (in {language_name}):"
+    full_prompt = f"{context_prompt}\n\n{request.query}\n\n## YOUR RESPONSE (in {language_name} only):"
     
     print(f"🤖 Querying for: {request.query[:50]}...")
     answer = await Llama.generate_response(full_prompt)
@@ -499,6 +485,53 @@ PASSENGER MESSAGE:
         "has_history": has_history,
         "timestamp": ts
     }
+
+@app.post("/api/service-request")
+async def send_service_request(request: QueryRequest):
+    """Send a confirmed service request to crew."""
+    # Re-detect to get service type (or accept it from frontend)
+    service_request = await Llama.detect_service_with_tools(request.query, request.language)
+    
+    if not service_request:
+        raise HTTPException(status_code=400, detail="No service request detected")
+    
+    # Translate message to English for crew dashboard
+    message_english = await translate_to_english(request.query, request.language, Llama)
+    
+    # Create and broadcast alert (with English translation)
+    alert = {
+        'seatNumber': request.seatNumber,
+        'serviceType': service_request['serviceType'],
+        'message': message_english,
+        'priority': service_request['priority'],
+        'timestamp': datetime.now().isoformat()
+    }
+    await crew_manager.broadcast(alert)
+    print(f"🚨 Service request sent: {service_request['serviceType']} from seat {request.seatNumber}")
+    
+    # Get confirmation message
+    response_message = get_service_message(
+        request.language, 
+        service_request['serviceType'], 
+        request.seatNumber
+    )
+    
+    # Persist conversation and query
+    try:
+        conversation_history.add_exchange(request.seatNumber, request.query, response_message)
+        await log_query(request.seatNumber, request.destination, request.query, response_message)
+        await log_conversation_message(request.seatNumber, 'user', request.query)
+        await log_conversation_message(request.seatNumber, 'assistant', response_message)
+    except Exception as e:
+        print(f"Error persisting service request conversation: {e}")
+    
+    return {
+        "answer": response_message,
+        "destination": request.destination,
+        "service_alert_sent": True,
+        "timestamp": datetime.now().isoformat()
+    }
+
 
 @app.get("/api/stats")
 async def get_statistics():

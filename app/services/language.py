@@ -59,3 +59,29 @@ English translation:"""
     except Exception as e:
         print(f"Translation error: {e}")
         return text  # Fallback to original if translation fails
+
+
+async def translate_to_language(text: str, target_language: str, llm_interface) -> str:
+    """Translate English text to target language for UI elements."""
+    if target_language == 'en':
+        return text
+    
+    language_name = LANGUAGE_NAMES.get(target_language, 'Unknown')
+    
+    translation_prompt = f"""Translate the following English text to {language_name}. 
+Only return the {language_name} translation, nothing else. Do not add any explanations or notes.
+Keep it natural and concise.
+
+Text: {text}
+
+{language_name} translation:"""
+    
+    try:
+        translated = await llm_interface.generate_response(translation_prompt, temperature=0.1)
+        # Clean up the translation - remove any quotes or extra formatting
+        translated = translated.strip().strip('"').strip("'")
+        print(f"🌐 Translated to {language_name}: '{text}' → '{translated}'")
+        return translated
+    except Exception as e:
+        print(f"Translation error: {e}")
+        return text  # Fallback to original if translation fails

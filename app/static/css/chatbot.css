@@ -643,6 +643,115 @@ body {
 }
 
 /* ===========================================
+   Service Request Confirmation Dialog
+   =========================================== */
+.service-confirm {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.9);
+    width: 90%;
+    max-width: 420px;
+    background: var(--bg-card);
+    border: 2px solid var(--primary);
+    border-radius: var(--radius-lg);
+    padding: 32px 28px;
+    z-index: 100;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.service-confirm.open {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+    pointer-events: all;
+}
+
+.service-confirm-icon {
+    font-size: 48px;
+    text-align: center;
+    margin-bottom: 16px;
+    animation: ring 0.5s ease-in-out;
+}
+
+@keyframes ring {
+    0%, 100% { transform: rotate(0deg); }
+    10%, 30%, 50%, 70%, 90% { transform: rotate(-10deg); }
+    20%, 40%, 60%, 80% { transform: rotate(10deg); }
+}
+
+.service-confirm-title {
+    font-size: 22px;
+    font-weight: 600;
+    text-align: center;
+    margin-bottom: 12px;
+    color: var(--text-primary);
+}
+
+.service-confirm-text {
+    font-size: 15px;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.5;
+    margin-bottom: 20px;
+}
+
+.service-confirm-details {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    text-align: center;
+    margin-bottom: 24px;
+    color: var(--primary);
+    font-weight: 500;
+}
+
+.service-confirm-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.service-confirm-btn {
+    flex: 1;
+    padding: 12px 20px;
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.service-confirm-btn.cancel {
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+
+.service-confirm-btn.cancel:hover {
+    background: var(--bg-message-assistant);
+    color: var(--text-primary);
+}
+
+.service-confirm-btn.confirm {
+    background: linear-gradient(135deg, var(--primary), #4a6b82);
+    color: white;
+    box-shadow: 0 4px 12px rgba(89, 127, 151, 0.3);
+}
+
+.service-confirm-btn.confirm:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(89, 127, 151, 0.4);
+}
+
+/* ===========================================
    Backdrop
    =========================================== */
 .backdrop {
@@ -687,4 +796,10 @@ body {
     .quick-prompt {
         text-align: left;
     }
+
+    .service-confirm {
+        width: 95%;
+        padding: 24px 20px;
+    }
+}
 }
