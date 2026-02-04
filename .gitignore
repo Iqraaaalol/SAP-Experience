@@ -1,3 +1,5 @@
+# Ignore committed model checkpoints
+checkpoints/affectnet_best_convnext_base.pth
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
