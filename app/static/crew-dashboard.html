@@ -335,6 +335,119 @@
             );
         }
 
+        // System Status Component (shows ChromaDB, model, etc.)
+        function SystemStatus() {
+            const [stats, setStats] = useState(null);
+            const [health, setHealth] = useState(null);
+
+            useEffect(() => {
+                const fetchStatus = async () => {
+                    try {
+                        const [statsRes, healthRes] = await Promise.all([
+                            fetch('/api/stats'),
+                            fetch('/api/health')
+                        ]);
+                        if (statsRes.ok) setStats(await statsRes.json());
+                        if (healthRes.ok) setHealth(await healthRes.json());
+                    } catch (error) {
+                        console.error('Failed to fetch system status:', error);
+                    }
+                };
+                fetchStatus();
+                const interval = setInterval(fetchStatus, 10000); // Refresh every 10s
+                return () => clearInterval(interval);
+            }, []);
+
+            return (
+                <div style={{
+                    background: 'rgba(0,0,0,0.2)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginTop: '16px',
+                    fontSize: '12px'
+                }}>
+                    <div style={{ 
+                        fontWeight: 600, 
+                        marginBottom: '10px', 
+                        fontSize: '13px',
+                        color: 'var(--color-text-secondary)'
+                    }}>
+                        🖥️ SYSTEM STATUS
+                    </div>
+                    
+                    {/* ChromaDB Status */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        marginBottom: '6px'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>ChromaDB</span>
+                        <span style={{ 
+                            color: stats?.chroma_available ? '#22c55e' : '#ef4444',
+                            fontWeight: 500
+                        }}>
+                            {stats?.chroma_available ? '● Connected' : '○ Offline'}
+                        </span>
+                    </div>
+                    
+                    {/* LLM Model */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        marginBottom: '6px'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>LLM Model</span>
+                        <span style={{ color: '#a1a1aa' }}>
+                            {stats?.model || 'llama3.2:3b'}
+                        </span>
+                    </div>
+                    
+                    {/* Health Status */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        marginBottom: '6px'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>API Health</span>
+                        <span style={{ 
+                            color: health?.status === 'ok' ? '#22c55e' : '#ef4444',
+                            fontWeight: 500
+                        }}>
+                            {health?.status === 'ok' ? '● Healthy' : '○ Error'}
+                        </span>
+                    </div>
+                    
+                    {/* Cache Size */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        marginBottom: '6px'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>Cache Size</span>
+                        <span style={{ color: '#a1a1aa' }}>
+                            {stats?.cache_size ?? 0} entries
+                        </span>
+                    </div>
+                    
+                    {/* Total Queries */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>Total Queries</span>
+                        <span style={{ color: '#a1a1aa' }}>
+                            {stats?.total_queries ?? 0}
+                        </span>
+                    </div>
+                </div>
+            );
+        }
+
         // Stats Sidebar Component
         function StatsSidebar({ alerts, isConnected, selectedCategory, onCategoryClick }) {
             const stats = useMemo(() => {
@@ -416,6 +529,8 @@
                             <span className="category-count">{1}</span>
                         </div>
                     </div>
+
+                    <SystemStatus />
                 </div>
             );
         }

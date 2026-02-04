@@ -1,4 +1,4 @@
-from wikivoyage_chromadb_bot import WikiVoyageProcessor, ChromaDBManager, TravelChatBot
+from wikivoyage_chromadb_bot import WikiVoyageProcessor, ChromaDBManager
 from dotenv import load_dotenv
 from pathlib import Path
 import os

@@ -2,73 +2,194 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aircraft Travel Assistant</title>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Avia - Your Travel Assistant</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/chatbot.css">
 </head>
 <body>
-    <div id="root"></div>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-brand">
+                <div class="header-logo">✈️</div>
+                <div>
+                    <div class="header-title">Avia</div>
+                    <div class="header-subtitle">Your In-Flight Travel Assistant</div>
+                </div>
+            </div>
+            <div class="header-settings">
+                <button class="settings-btn" @click="showSettings = !showSettings">
+                    ⚙️ <span>{{ seatNumber }}</span>
+                </button>
+            </div>
+        </header>
 
-    <script type="text/babel">
-        const { useState, useEffect, useRef, useCallback } = React;
+        <!-- Chat Container -->
+        <div class="chat-container">
+            <!-- Messages Area -->
+            <div class="messages-area" ref="messagesArea">
+                <!-- Welcome Screen (shown when no messages) -->
+                <div v-if="messages.length === 0" class="welcome-screen">
+                    <div class="welcome-avatar">✈️</div>
+                    <h1 class="welcome-title">Hello! I'm Avia</h1>
+                    <p class="welcome-subtitle">
+                        Your personal travel assistant. Ask me anything about your destination, 
+                        request in-flight services, or get travel tips in your preferred language.
+                    </p>
+                    <div class="quick-prompts">
+                        <button class="quick-prompt" @click="sendQuickPrompt('What are the top attractions?')">
+                            🏛️ Top attractions
+                        </button>
+                        <button class="quick-prompt" @click="sendQuickPrompt('What local food should I try?')">
+                            🍜 Local cuisine
+                        </button>
+                        <button class="quick-prompt" @click="sendQuickPrompt('Can I get some water please?')">
+                            💧 Request water
+                        </button>
+                        <button class="quick-prompt" @click="sendQuickPrompt('What\'s the weather like?')">
+                            🌤️ Weather info
+                        </button>
+                    </div>
+                </div>
 
-        const API_BASE_URL = '/api';
+                <!-- Message List -->
+                <template v-for="(msg, index) in messages" :key="index">
+                    <div :class="['message', msg.role]">
+                        <div class="message-avatar">
+                            {{ msg.role === 'user' ? '👤' : '✈️' }}
+                        </div>
+                        <div>
+                            <div class="message-content" v-html="msg.html || msg.content"></div>
+                            <div class="message-meta">
+                                <span>{{ formatTime(msg.timestamp) }}</span>
+                                <span v-if="msg.fromCache">⚡ Cached</span>
+                            </div>
+                            <div v-if="msg.serviceAlert" class="service-badge">
+                                ✅ Crew notified
+                            </div>
+                        </div>
+                    </div>
+                </template>
 
-        // API Service
-        const apiService = {
-            async healthCheck() {
-                try {
-                    const response = await fetch(`${API_BASE_URL}/health`);
-                    return await response.json();
-                } catch (error) {
-                    console.error('Health check failed:', error);
-                    throw error;
-                }
-            },
+                <!-- Typing Indicator -->
+                <div v-if="isLoading" class="typing-indicator">
+                    <div class="typing-avatar">✈️</div>
+                    <div class="typing-bubble">
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                    </div>
+                </div>
+            </div>
 
-            async listDestinations() {
-                const response = await fetch(`${API_BASE_URL}/destinations`);
-                return await response.json();
-            },
+            <!-- Input Area -->
+            <div class="input-area">
+                <div class="input-context">
+                    <div class="context-chip">
+                        🌍
+                        <input 
+                            type="text" 
+                            v-model="destination" 
+                            placeholder="Destination"
+                            style="width: 80px;"
+                        >
+                    </div>
+                    <div class="context-chip">
+                        🌐
+                        <select v-model="language">
+                            <option value="en">English</option>
+                            <option value="es">Español</option>
+                            <option value="fr">Français</option>
+                            <option value="de">Deutsch</option>
+                            <option value="hi">हिंदी</option>
+                            <option value="pt">Português</option>
+                            <option value="th">ไทย</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="input-wrapper">
+                    <div class="input-box">
+                        <textarea 
+                            ref="inputField"
+                            v-model="inputText"
+                            @keydown.enter.exact.prevent="sendMessage"
+                            placeholder="Ask me anything..."
+                            rows="1"
+                            @input="autoResize"
+                        ></textarea>
+                        <button 
+                            v-if="speechSupported"
+                            class="mic-btn" 
+                            :class="{ recording: isListening }"
+                            @click="toggleSpeech"
+                            :title="isListening ? 'Stop recording' : 'Voice input'"
+                        >
+                            {{ isListening ? '⏹️' : '🎤' }}
+                        </button>
+                    </div>
+                    <button 
+                        class="send-btn" 
+                        @click="sendMessage"
+                        :disabled="!canSend"
+                        title="Send message"
+                    >
+                        ➤
+                    </button>
+                </div>
+            </div>
+        </div>
 
-            async getDestinationDetails(destination) {
-                const response = await fetch(`${API_BASE_URL}/destinations/${destination}`);
-                if (!response.ok) throw new Error('Destination not found');
-                return await response.json();
-            },
+        <!-- Settings Panel -->
+        <div v-if="showSettings" class="backdrop" @click="showSettings = false"></div>
+        <div class="settings-panel" :class="{ open: showSettings }">
+            <div class="settings-header">
+                <span class="settings-title">Settings</span>
+                <button class="settings-close" @click="showSettings = false">✕</button>
+            </div>
+            <div class="settings-group">
+                <div class="settings-label">Seat Number</div>
+                <input class="settings-input" type="text" v-model="seatNumber" placeholder="e.g., 12A">
+            </div>
+            <div class="settings-group">
+                <div class="settings-label">Destination</div>
+                <input class="settings-input" type="text" v-model="destination" placeholder="e.g., Dubai">
+            </div>
+            <div class="settings-group">
+                <div class="settings-label">Language</div>
+                <select class="settings-input" v-model="language">
+                    <option value="en">English</option>
+                    <option value="es">Spanish</option>
+                    <option value="fr">French</option>
+                    <option value="de">German</option>
+                    <option value="hi">Hindi</option>
+                    <option value="pt">Portuguese</option>
+                    <option value="th">Thai</option>
+                </select>
+            </div>
+            <div class="settings-group" style="margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border);">
+                <button class="settings-btn" style="width: 100%; justify-content: center;" @click="clearChat">
+                    🗑️ Clear Conversation
+                </button>
+            </div>
+        </div>
 
-            async submitQuery(queryData) {
-                const response = await fetch(`${API_BASE_URL}/query`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(queryData)
-                });
-                return await response.json();
-            },
+        <!-- Toast -->
+        <div v-if="toast" :class="['toast', toast.type]">
+            <span>{{ toast.icon }}</span>
+            <span>{{ toast.message }}</span>
+        </div>
+    </div>
 
-            async crewRequest(requestData) {
-                const response = await fetch(`${API_BASE_URL}/crew-request`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestData)
-                });
-                return await response.json();
-            },
+    <script>
+        const { createApp, ref, computed, watch, nextTick, onMounted } = Vue;
 
-            async getStats() {
-                const response = await fetch(`${API_BASE_URL}/stats`);
-                return await response.json();
-            }
-        };
-
-        // Language code mapping for Web Speech API (ISO 639-1 to BCP 47)
+        // Language codes for speech recognition
         const LANGUAGE_MAP = {
             'en': 'en-US',
-            'es': 'es-ES',
+            'es': 'es-ES', 
             'fr': 'fr-FR',
             'de': 'de-DE',
             'hi': 'hi-IN',
@@ -76,596 +197,211 @@
             'th': 'th-TH'
         };
 
-        // Check if Web Speech API is supported
-        const isSpeechRecognitionSupported = () => {
-            return 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window;
-        };
+        createApp({
+            setup() {
+                // State
+                const messages = ref([]);
+                const inputText = ref('');
+                const isLoading = ref(false);
+                const seatNumber = ref(localStorage.getItem('seatNumber') || '12A');
+                const destination = ref(localStorage.getItem('destination') || 'Dubai');
+                const language = ref(localStorage.getItem('language') || 'en');
+                const showSettings = ref(false);
+                const toast = ref(null);
+                const messagesArea = ref(null);
+                const inputField = ref(null);
 
-        // Custom hook for speech recognition
-        function useSpeechRecognition(language, onResult, onInterimResult) {
-            const [isListening, setIsListening] = useState(false);
-            const [error, setError] = useState(null);
-            const recognitionRef = useRef(null);
-            const isListeningRef = useRef(false);
+                // Speech recognition
+                const speechSupported = ref(false);
+                const isListening = ref(false);
+                let recognition = null;
 
-            // Initialize or reinitialize recognition when language changes
-            useEffect(() => {
-                if (!isSpeechRecognitionSupported()) {
-                    setError('Speech recognition not supported in this browser. Please use Chrome or Edge.');
-                    return;
-                }
-
-                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-                const recognition = new SpeechRecognition();
-
-                recognition.continuous = true;
-                recognition.interimResults = true;
-                recognition.lang = LANGUAGE_MAP[language] || 'en-US';
-                recognition.maxAlternatives = 1;
-
-                recognition.onstart = () => {
-                    setIsListening(true);
-                    isListeningRef.current = true;
-                    setError(null);
-                };
-
-                recognition.onend = () => {
-                    setIsListening(false);
-                    // Auto-restart if we're still supposed to be listening (continuous mode)
-                    if (isListeningRef.current) {
-                        try {
-                            recognition.start();
-                        } catch (e) {
-                            // Ignore if already started
-                        }
-                    }
-                };
-
-                recognition.onresult = (event) => {
-                    let interimTranscript = '';
-                    let finalTranscript = '';
-
-                    for (let i = event.resultIndex; i < event.results.length; i++) {
-                        const transcript = event.results[i][0].transcript;
-                        if (event.results[i].isFinal) {
-                            finalTranscript += transcript + ' ';
-                        } else {
-                            interimTranscript += transcript;
-                        }
-                    }
-
-                    if (finalTranscript && onResult) {
-                        onResult(finalTranscript.trim());
-                    }
-                    if (interimTranscript && onInterimResult) {
-                        onInterimResult(interimTranscript);
-                    }
-                };
-
-                recognition.onerror = (event) => {
-                    console.error('Speech recognition error:', event.error);
-                    if (event.error === 'not-allowed') {
-                        setError('Microphone access denied. Please allow microphone permissions.');
-                        isListeningRef.current = false;
-                        setIsListening(false);
-                    } else if (event.error === 'no-speech') {
-                        // No speech detected, this is normal - don't show error
-                    } else if (event.error === 'network') {
-                        setError('Network error. Please check your connection.');
-                    } else if (event.error !== 'aborted') {
-                        setError(`Speech recognition error: ${event.error}`);
-                    }
-                };
-
-                recognitionRef.current = recognition;
-
-                // Cleanup on unmount or language change
-                return () => {
-                    isListeningRef.current = false;
-                    try {
-                        recognition.stop();
-                    } catch (e) {
-                        // Ignore
-                    }
-                };
-            }, [language, onResult, onInterimResult]);
-
-            const startListening = useCallback(() => {
-                if (recognitionRef.current && !isListeningRef.current) {
-                    try {
-                        isListeningRef.current = true;
-                        recognitionRef.current.start();
-                        setError(null);
-                    } catch (e) {
-                        console.error('Failed to start recognition:', e);
-                        setError('Failed to start speech recognition.');
-                    }
-                }
-            }, []);
-
-            const stopListening = useCallback(() => {
-                isListeningRef.current = false;
-                if (recognitionRef.current) {
-                    try {
-                        recognitionRef.current.stop();
-                    } catch (e) {
-                        // Ignore
-                    }
-                }
-                setIsListening(false);
-            }, []);
-
-            const toggleListening = useCallback(() => {
-                if (isListeningRef.current) {
-                    stopListening();
-                } else {
-                    startListening();
-                }
-            }, [startListening, stopListening]);
-
-            return {
-                isListening,
-                error,
-                startListening,
-                stopListening,
-                toggleListening,
-                isSupported: isSpeechRecognitionSupported()
-            };
-        }
-
-        // Microphone Button Component
-        function MicButton({ isListening, onClick, disabled, title }) {
-            return (
-                <button
-                    type="button"
-                    className={`mic-btn ${isListening ? 'recording' : ''}`}
-                    onClick={onClick}
-                    disabled={disabled}
-                    title={title || (isListening ? 'Stop recording' : 'Start voice input')}
-                    aria-label={isListening ? 'Stop recording' : 'Start voice input'}
-                >
-                    {isListening ? '⏹️' : '🎤'}
-                </button>
-            );
-        }
-
-        // Message Component
-        function Message({ type, icon, text, onClose }) {
-            useEffect(() => {
-                const timer = setTimeout(onClose, 4000);
-                return () => clearTimeout(timer);
-            }, [onClose]);
-
-            return (
-                <div className={`message message-${type}`}>
-                    <span className="message-icon">{icon}</span>
-                    <div>{text}</div>
-                </div>
-            );
-        }
-
-        // Safe timestamp formatter — returns a readable time or an em dash if invalid
-        function formatTimestamp(ts) {
-            if (!ts) return '—';
-            const d = new Date(ts);
-            if (Number.isNaN(d.getTime())) return '—';
-            return d.toLocaleTimeString();
-        }
-
-        // Query Panel Component — now accepts a manual destination input since server-side list was removed
-        function QueryPanel({ selectedDestination, onQuerySubmit, isLoading }) {
-            const [query, setQuery] = useState('');
-            const [seatNumber, setSeatNumber] = useState('12A');
-            const [language, setLanguage] = useState('en');
-            const [destinationInput, setDestinationInput] = useState(selectedDestination || '');
-            const [interimDestination, setInterimDestination] = useState('');
-            const [interimQuery, setInterimQuery] = useState('');
-            const [activeMic, setActiveMic] = useState(null); // 'destination' or 'query'
-
-            // Speech recognition callbacks for destination
-            const handleDestinationResult = useCallback((transcript) => {
-                setDestinationInput(prev => {
-                    const newValue = prev ? prev + ' ' + transcript : transcript;
-                    return newValue.trim();
-                });
-                setInterimDestination('');
-            }, []);
-
-            const handleDestinationInterim = useCallback((transcript) => {
-                setInterimDestination(transcript);
-            }, []);
-
-            // Speech recognition callbacks for query
-            const handleQueryResult = useCallback((transcript) => {
-                setQuery(prev => {
-                    const newValue = prev ? prev + ' ' + transcript : transcript;
-                    return newValue.trim();
-                });
-                setInterimQuery('');
-            }, []);
-
-            const handleQueryInterim = useCallback((transcript) => {
-                setInterimQuery(transcript);
-            }, []);
-
-            // Speech recognition hooks
-            const destinationSpeech = useSpeechRecognition(
-                language,
-                handleDestinationResult,
-                handleDestinationInterim
-            );
-
-            const querySpeech = useSpeechRecognition(
-                language,
-                handleQueryResult,
-                handleQueryInterim
-            );
-
-            // Handle mic toggle - ensure only one mic is active at a time
-            const handleDestinationMicToggle = useCallback(() => {
-                if (querySpeech.isListening) {
-                    querySpeech.stopListening();
-                }
-                if (destinationSpeech.isListening) {
-                    destinationSpeech.stopListening();
-                    setActiveMic(null);
-                    setInterimDestination('');
-                } else {
-                    destinationSpeech.startListening();
-                    setActiveMic('destination');
-                }
-            }, [destinationSpeech, querySpeech]);
-
-            const handleQueryMicToggle = useCallback(() => {
-                if (destinationSpeech.isListening) {
-                    destinationSpeech.stopListening();
-                }
-                if (querySpeech.isListening) {
-                    querySpeech.stopListening();
-                    setActiveMic(null);
-                    setInterimQuery('');
-                } else {
-                    querySpeech.startListening();
-                    setActiveMic('query');
-                }
-            }, [destinationSpeech, querySpeech]);
-
-            const handleSubmit = async (e) => {
-                e.preventDefault();
-                if (!query.trim()) return;
-
-                // Stop any active recording before submitting
-                if (destinationSpeech.isListening) destinationSpeech.stopListening();
-                if (querySpeech.isListening) querySpeech.stopListening();
-                setActiveMic(null);
-
-                const destination = (selectedDestination || destinationInput || '').trim();
-                if (!destination) return;
-
-                await onQuerySubmit({
-                    query,
-                    destination: destination.toLowerCase(),
-                    seatNumber,
-                    language
+                // Computed
+                const canSend = computed(() => {
+                    return inputText.value.trim() && destination.value.trim() && !isLoading.value;
                 });
 
-                setQuery('');
-                setInterimQuery('');
-            };
+                // Methods
+                const formatTime = (timestamp) => {
+                    if (!timestamp) return '';
+                    const date = new Date(timestamp);
+                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                };
 
-            // Display value with interim results
-            const displayDestination = interimDestination 
-                ? destinationInput + (destinationInput ? ' ' : '') + interimDestination 
-                : destinationInput;
-            const displayQuery = interimQuery 
-                ? query + (query ? ' ' : '') + interimQuery 
-                : query;
+                const showToast = (message, type = 'success', icon = '✓') => {
+                    toast.value = { message, type, icon };
+                    setTimeout(() => { toast.value = null; }, 3000);
+                };
 
-            const speechSupported = isSpeechRecognitionSupported();
-            const speechError = destinationSpeech.error || querySpeech.error;
+                const scrollToBottom = async () => {
+                    await nextTick();
+                    if (messagesArea.value) {
+                        messagesArea.value.scrollTop = messagesArea.value.scrollHeight;
+                    }
+                };
 
-            return (
-                <div className="card">
-                    <h3>✈️ Ask About This Destination</h3>
+                const autoResize = (e) => {
+                    const el = e.target;
+                    el.style.height = 'auto';
+                    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+                };
+
+                const sendMessage = async () => {
+                    if (!canSend.value) return;
+
+                    const query = inputText.value.trim();
+                    inputText.value = '';
                     
-                    {!speechSupported && (
-                        <div className="speech-unsupported">
-                            ⚠️ Voice input is not supported in this browser. Please use Chrome or Edge for speech-to-text.
-                        </div>
-                    )}
+                    // Reset textarea height
+                    if (inputField.value) {
+                        inputField.value.style.height = 'auto';
+                    }
 
-                    {speechError && (
-                        <div className="speech-status error">
-                            ⚠️ {speechError}
-                        </div>
-                    )}
+                    // Add user message
+                    messages.value.push({
+                        role: 'user',
+                        content: query,
+                        timestamp: new Date().toISOString()
+                    });
 
-                    <form onSubmit={handleSubmit}>
-                        <div className="form-group">
-                            <label className="form-label">Destination</label>
-                            <div className="input-with-mic">
-                                <input
-                                    type="text"
-                                    className="form-input"
-                                    value={displayDestination}
-                                    onChange={(e) => setDestinationInput(e.target.value)}
-                                    placeholder="e.g., paris, tokyo (or use mic)"
-                                />
-                                {speechSupported && (
-                                    <MicButton
-                                        isListening={destinationSpeech.isListening}
-                                        onClick={handleDestinationMicToggle}
-                                        disabled={isLoading}
-                                        title={destinationSpeech.isListening ? 'Stop recording destination' : 'Speak destination name'}
-                                    />
-                                )}
-                            </div>
-                            {destinationSpeech.isListening && (
-                                <div className="speech-status listening">
-                                    <span className="speech-status-dot"></span>
-                                    Listening for destination... (click mic to stop)
-                                </div>
-                            )}
-                        </div>
+                    scrollToBottom();
+                    isLoading.value = true;
 
-                        <div className="form-group">
-                            <label className="form-label">Your Seat Number</label>
-                            <input
-                                type="text"
-                                className="form-input"
-                                value={seatNumber}
-                                onChange={(e) => setSeatNumber(e.target.value)}
-                                placeholder="e.g., 12A"
-                            />
-                        </div>
-
-                        <div className="form-group">
-                            <label className="form-label">Language Preference</label>
-                            <select
-                                className="form-select"
-                                value={language}
-                                onChange={(e) => setLanguage(e.target.value)}
-                            >
-                                <option value="en">English</option>
-                                <option value="es">Spanish</option>
-                                <option value="fr">French</option>
-                                <option value="de">German</option>
-                                <option value="hi">Hindi</option>
-                                <option value="pt">Portuguese</option>
-                                <option value="th">Thai</option>
-                            </select>
-                        </div>
-
-                        <div className="form-group">
-                            <label className="form-label">Your Question</label>
-                            <div className="input-with-mic">
-                                <textarea
-                                    className="form-textarea"
-                                    value={displayQuery}
-                                    onChange={(e) => setQuery(e.target.value)}
-                                    placeholder="What would you like to know about this destination? (or use mic)"
-                                />
-                                {speechSupported && (
-                                    <MicButton
-                                        isListening={querySpeech.isListening}
-                                        onClick={handleQueryMicToggle}
-                                        disabled={isLoading}
-                                        title={querySpeech.isListening ? 'Stop recording question' : 'Speak your question'}
-                                    />
-                                )}
-                            </div>
-                            {querySpeech.isListening && (
-                                <div className="speech-status listening">
-                                    <span className="speech-status-dot"></span>
-                                    Listening... speak your question (click mic to stop)
-                                </div>
-                            )}
-                        </div>
-
-                        <button
-                            type="submit"
-                            className="btn btn-primary btn-full"
-                            disabled={!(selectedDestination || destinationInput) || !displayQuery.trim() || isLoading}
-                        >
-                            {isLoading ? (
-                                <>
-                                    <div className="loading"></div> Generating Response...
-                                </>
-                            ) : (
-                                '🔍 Get Information'
-                            )}
-                        </button>
-                    </form>
-                </div>
-            );
-        }
-
-        // Response Display Component
-        function ResponseDisplay({ response, isLoading }) {
-            const responseRef = useRef(null);
-
-            useEffect(() => {
-                if (response && responseRef.current) {
-                    // Parse Markdown and render HTML
-                    const htmlContent = marked.parse(response.answer);
-                    responseRef.current.innerHTML = htmlContent;
-                }
-            }, [response]);
-
-            if (isLoading) {
-                return (
-                    <div className="card">
-                        <div className="thinking-container">
-                            <div className="thinking-dots">
-                                <span></span>
-                                <span></span>
-                                <span></span>
-                            </div>
-                            <span className="thinking-text">Thinking...</span>
-                        </div>
-                    </div>
-                );
-            }
-
-            if (!response) return null;
-
-            return (
-                <div className="card">
-                    <div className="card-header">
-                        <span className="card-title">📍 Response</span>
-                        <span className="card-meta">{formatTimestamp(response.timestamp)}</span>
-                    </div>
-
-                    <div className="response-container" ref={responseRef}></div>
-
-                    {response.from_cache && (
-                        <span className="cache-badge">⚡ Cached</span>
-                    )}
-                </div>
-            );
-        }
-
-        // Main App Component
-        function TravelAssistantApp() {
-            const [destinations, setDestinations] = useState([]);
-            const [selectedDestination, setSelectedDestination] = useState(null);
-            const [response, setResponse] = useState(null);
-            const [isLoading, setIsLoading] = useState(false);
-            const [isLoadingDestinations, setIsLoadingDestinations] = useState(true);
-            const [messages, setMessages] = useState([]);
-            const [stats, setStats] = useState(null);
-            const contentRef = useRef(null);
-
-            // Initialize health/stats on mount — destinations are entered manually now
-            useEffect(() => {
-                const init = async () => {
                     try {
-                        await apiService.healthCheck();
-                        const statsData = await apiService.getStats();
-                        setStats(statsData);
-                        // We no longer load a server-side destinations list; users type destinations.
+                        const response = await fetch('/api/query', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                query,
+                                destination: destination.value,
+                                seatNumber: seatNumber.value,
+                                language: language.value
+                            })
+                        });
+
+                        const data = await response.json();
+                        
+                        // Parse markdown
+                        const htmlContent = marked.parse(data.answer || data.response || '');
+
+                        messages.value.push({
+                            role: 'assistant',
+                            content: data.answer || data.response,
+                            html: htmlContent,
+                            timestamp: data.timestamp || new Date().toISOString(),
+                            fromCache: data.from_cache,
+                            serviceAlert: data.service_alert_sent
+                        });
+
+                        if (data.service_alert_sent) {
+                            showToast('Crew has been notified!', 'success', '✅');
+                        }
+
                     } catch (error) {
-                        addMessage('error', '❌', 'Failed to connect to backend. Is the server running?');
-                    } finally {
-                        setIsLoadingDestinations(false);
+                        console.error('Error:', error);
+                        showToast('Failed to get response. Please try again.', 'error', '❌');
+                        
+                        messages.value.push({
+                            role: 'assistant',
+                            content: 'Sorry, I encountered an error. Please try again.',
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+
+                    isLoading.value = false;
+                    scrollToBottom();
+                };
+
+                const sendQuickPrompt = (prompt) => {
+                    inputText.value = prompt;
+                    sendMessage();
+                };
+
+                const clearChat = async () => {
+                    try {
+                        await fetch(`/api/conversation/${seatNumber.value}`, { method: 'DELETE' });
+                        messages.value = [];
+                        showToast('Conversation cleared', 'success', '🗑️');
+                        showSettings.value = false;
+                    } catch (error) {
+                        showToast('Failed to clear conversation', 'error', '❌');
                     }
                 };
-                init();
-            }, []);
 
-            const addMessage = useCallback((type, icon, text) => {
-                const id = Date.now();
-                setMessages(prev => [...prev, { id, type, icon, text }]);
-            }, []);
+                // Speech recognition
+                const initSpeechRecognition = () => {
+                    if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+                        speechSupported.value = true;
+                        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                        recognition = new SpeechRecognition();
+                        recognition.continuous = true;
+                        recognition.interimResults = true;
 
-            const removeMessage = useCallback((id) => {
-                setMessages(prev => prev.filter(m => m.id !== id));
-            }, []);
+                        recognition.onresult = (event) => {
+                            let transcript = '';
+                            for (let i = event.resultIndex; i < event.results.length; i++) {
+                                transcript += event.results[i][0].transcript;
+                            }
+                            inputText.value = transcript;
+                        };
 
-            const handleQuerySubmit = async (queryData) => {
-                setIsLoading(true);
-                try {
-                    const result = await apiService.submitQuery(queryData);
-                    setResponse(result);
-                    addMessage('success', '✓', 'Response generated successfully!');
-                    if (contentRef.current) {
-                        contentRef.current.scrollTop = contentRef.current.scrollHeight;
+                        recognition.onend = () => {
+                            isListening.value = false;
+                        };
+
+                        recognition.onerror = () => {
+                            isListening.value = false;
+                        };
                     }
-                } catch (error) {
-                    addMessage('error', '❌', 'Failed to get response: ' + error.message);
-                }
-                setIsLoading(false);
-            };
+                };
 
-            return (
-                <div className="app-container">
-                    {/* Sidebar - now shows KB status and stats; destinations are entered manually */}
-                    <div className="sidebar">
-                        <h2 style={{ marginTop: 0, marginBottom: 'var(--spacing-md)' }}>🔎 Knowledge</h2>
-                        {isLoadingDestinations ? (
-                            <div className="skeleton" style={{ height: '150px' }}></div>
-                        ) : (
-                            <div>
-                                <div className="card">
-                                    <h3>Knowledge Base</h3>
-                                    <p style={{ color: 'var(--color-text-secondary)' }}>
-                                        Chroma available: {stats?.chroma_available ? 'Yes' : 'No'}
-                                    </p>
-                                    <p style={{ color: 'var(--color-text-secondary)' }}>Model: {stats?.model}</p>
-                                    <p style={{ color: 'var(--color-text-secondary)' }}>Cached: {stats?.cache_size}</p>
-                                </div>
-                                <div className="card">
-                                    <h3>Quick Start</h3>
-                                    <p style={{ color: 'var(--color-text-secondary)' }}>Type a destination in the query panel (e.g., "paris") and ask your question.</p>
-                                </div>
-                            </div>
-                        )}
-                    </div>
+                const toggleSpeech = () => {
+                    if (!recognition) return;
 
-                    {/* Main Content */}
-                    <div className="main-content">
-                        {/* Header */}
-                        <div className="header">
-                            <h1>
-                                <span className="header-icon">✈️</span>
-                                Aircraft Travel Assistant
-                            </h1>
-                        </div>
+                    if (isListening.value) {
+                        recognition.stop();
+                        isListening.value = false;
+                    } else {
+                        recognition.lang = LANGUAGE_MAP[language.value] || 'en-US';
+                        recognition.start();
+                        isListening.value = true;
+                    }
+                };
 
-                        {/* Stats */}
-                        {stats && (
-                            <div style={{ padding: 'var(--spacing-lg)', background: 'rgba(0,0,0,0.2)', borderBottom: '1px solid var(--color-border)' }}>
-                                <div className="stats-grid">
-                                    <div className="stat-card">
-                                        <div className="stat-value">{stats.total_queries}</div>
-                                        <div className="stat-label">Total Queries</div>
-                                    </div>
-                                    <div className="stat-card">
-                                        <div className="stat-value">{stats.cache_size}</div>
-                                        <div className="stat-label">Cache Size</div>
-                                    </div>
-                                    <div className="stat-card">
-                                        <div className="stat-value">{stats.active_conversations}</div>
-                                        <div className="stat-label">Active Conversations</div>
-                                    </div>
-                                </div>
-                                <div style={{ marginTop: 'var(--spacing-md)' }}>
-                                    <div style={{ color: 'var(--color-text-secondary)' }}>Chroma available: {stats.chroma_available ? 'Yes' : 'No'}</div>
-                                </div>
-                            </div>
-                        )}
+                // Watchers - persist settings
+                watch(seatNumber, (val) => localStorage.setItem('seatNumber', val));
+                watch(destination, (val) => localStorage.setItem('destination', val));
+                watch(language, (val) => localStorage.setItem('language', val));
 
-                        {/* Content Area */}
-                        <div className="content-area" ref={contentRef}>
-                            {/* Messages */}
-                            {messages.map(msg => (
-                                <Message
-                                    key={msg.id}
-                                    type={msg.type}
-                                    icon={msg.icon}
-                                    text={msg.text}
-                                    onClose={() => removeMessage(msg.id)}
-                                />
-                            ))}
+                // Lifecycle
+                onMounted(() => {
+                    initSpeechRecognition();
+                    inputField.value?.focus();
+                });
 
-                            {/* Query Panel */}
-                            <QueryPanel
-                                selectedDestination={selectedDestination}
-                                onQuerySubmit={handleQuerySubmit}
-                                isLoading={isLoading}
-                            />
-                            <ResponseDisplay
-                                response={response}
-                                isLoading={isLoading}
-                            />
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
-        // Render app
-        ReactDOM.createRoot(document.getElementById('root')).render(<TravelAssistantApp />);
+                return {
+                    messages,
+                    inputText,
+                    isLoading,
+                    seatNumber,
+                    destination,
+                    language,
+                    showSettings,
+                    toast,
+                    messagesArea,
+                    inputField,
+                    speechSupported,
+                    isListening,
+                    canSend,
+                    formatTime,
+                    autoResize,
+                    sendMessage,
+                    sendQuickPrompt,
+                    clearChat,
+                    toggleSpeech
+                };
+            }
+        }).mount('#app');
     </script>
 </body>
 </html>

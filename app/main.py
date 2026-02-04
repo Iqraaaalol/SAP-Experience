@@ -500,20 +500,6 @@ PASSENGER MESSAGE:
         "timestamp": ts
     }
 
-
-# Comfort feedback endpoint removed
-
-
-@app.post("/api/crew-request")
-async def crew_request(request: QueryRequest):
-    """Passenger requests crew assistance."""
-    return {
-        "status": "success",
-        "message": "Crew request submitted (not logged)",
-        "seatNumber": request.seatNumber
-    }
-
-
 @app.get("/api/stats")
 async def get_statistics():
     """Get system statistics."""
