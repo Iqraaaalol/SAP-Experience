@@ -291,7 +291,7 @@ def main():
                 optimizer, 
                 mode='max',           # maximize validation accuracy
                 factor=0.5,           # reduce LR by half
-                patience=3            # wait 3 epochs before reducing
+                patience=3           # wait 3 epochs before reducing
             )
             scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
             epochs_without_improvement = 0  # Reset for Phase 2
