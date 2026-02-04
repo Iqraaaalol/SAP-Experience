@@ -8,6 +8,7 @@ import os
 import time
 import numpy as np
 import argparse
+from collections import deque
 
 # Try to import config locally
 try:
@@ -437,6 +438,10 @@ def main():
     last_emotion_update = time.time()
     seat_emotions = {}  # seat_id -> (emotion, confidence)
     
+    # Temporal smoothing setup
+    smoothing_window = 5  # number of recent predictions to average
+    emotion_history = {}  # seat_id/face_idx -> deque of prob vectors
+    
     print("=" * 60)
     if use_seats:
         print("SAP Seat-Based Face Detection with Emotion Recognition")
@@ -496,9 +501,26 @@ def main():
                         face_landmarks[:, 1] -= y1
                     
                     if face_img.size > 0:
+                        # Get raw emotion detection
                         emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
-                        seat_emotions[seat_id] = (emotion, conf)
-                        detector.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
+                        
+                        # Apply temporal smoothing
+                        classes = detector.emotion_detector.class_names
+                        prob_vec = np.array([emotion_probs.get(c, 0.0) for c in classes])
+                        
+                        if seat_id not in emotion_history:
+                            emotion_history[seat_id] = deque(maxlen=smoothing_window)
+                        emotion_history[seat_id].append(prob_vec)
+                        
+                        # Compute moving average
+                        avg_probs = np.mean(np.array(emotion_history[seat_id]), axis=0)
+                        smoothed_idx = int(np.argmax(avg_probs))
+                        smoothed_emotion = classes[smoothed_idx]
+                        smoothed_conf = float(avg_probs[smoothed_idx])
+                        smoothed_probs = {c: float(avg_probs[i]) for i, c in enumerate(classes)}
+                        
+                        seat_emotions[seat_id] = (smoothed_emotion, smoothed_conf)
+                        detector.seat_manager.update_seat_emotion(seat_id, smoothed_emotion, smoothed_conf, smoothed_probs)
             else:
                 # No seats mode - detect emotions for all faces
                 if boxes is not None:
@@ -514,8 +536,24 @@ def main():
                             face_landmarks[:, 1] -= y1
                         
                         if face_img.size > 0:
+                            # Get raw emotion detection
                             emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
-                            seat_emotions[i] = (emotion, conf)  # Use face index as key
+                            
+                            # Apply temporal smoothing
+                            classes = detector.emotion_detector.class_names
+                            prob_vec = np.array([emotion_probs.get(c, 0.0) for c in classes])
+                            
+                            if i not in emotion_history:
+                                emotion_history[i] = deque(maxlen=smoothing_window)
+                            emotion_history[i].append(prob_vec)
+                            
+                            # Compute moving average
+                            avg_probs = np.mean(np.array(emotion_history[i]), axis=0)
+                            smoothed_idx = int(np.argmax(avg_probs))
+                            smoothed_emotion = classes[smoothed_idx]
+                            smoothed_conf = float(avg_probs[smoothed_idx])
+                            
+                            seat_emotions[i] = (smoothed_emotion, smoothed_conf)  # Use face index as key
             
             last_emotion_update = current_time
         
