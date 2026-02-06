@@ -66,12 +66,36 @@ class CVStreamProcessor:
         from mood_detection import FaceDetector
         from seat_manager import SeatManager
         from sleep_detector import SleepDetector
+        from seat_manager import SeatManager
         
         self.detector = FaceDetector()
         self.sleep_detector = SleepDetector()
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        
+        # Get actual dimensions
+        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Create seat manager and try to load calibration
+        self.seat_manager = SeatManager(
+            self.frame_width, 
+            self.frame_height,
+            auto_load_calibration=False
+        )
+        
+        calibration_path = Path(__file__).parent.parent / "computer-vision" / "seat_calibration.json"
+        if calibration_path.exists():
+            print(f"📍 Loading seat calibration from {calibration_path}")
+            if self.seat_manager.load_calibration(str(calibration_path)):
+                print(f"✅ Seat manager loaded with {len(self.seat_manager.seats)} seats")
+            else:
+                print(f"⚠️  Failed to load calibration, using default grid")
+                self.seat_manager._generate_grid_zones()
+        else:
+            print(f"⚠️  No calibration found at {calibration_path}, using default grid")
+            self.seat_manager._generate_grid_zones()
         
         # Get actual dimensions
         self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -123,6 +147,9 @@ class CVStreamProcessor:
             # Update seat assignments (pass frame for embedding extraction)
             seat_assignments = self.seat_manager.update_seats(boxes, frame, current_time)
             
+            # Update seat assignments (pass frame for embedding extraction)
+            seat_assignments = self.seat_manager.update_seats(boxes, frame, current_time)
+            
             # Update emotions if interval passed
             if (current_time - self.last_emotion_update) > self.emotion_update_interval:
                 for i, box in enumerate(boxes):
@@ -144,9 +171,16 @@ class CVStreamProcessor:
                         face_id = self.get_face_id(box)
                         self.cached_emotions[face_id] = (emotion, conf)
                         current_face_ids.add(face_id)
+                        
+                        # Update seat manager with emotion
+                        for seat_id, (assigned_idx, _) in seat_assignments.items():
+                            if assigned_idx == i:
+                                self.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
+                                seat_emotions[seat_id] = (emotion, conf)
                 
                 self.last_emotion_update = current_time
             else:
+                # Use cached emotions
                 # Use cached emotions
                 for box in boxes:
                     current_face_ids.add(self.get_face_id(box))
@@ -156,8 +190,14 @@ class CVStreamProcessor:
                     seat = self.seat_manager.seats.get(seat_id)
                     if seat and seat.current_emotion:
                         seat_emotions[seat_id] = (seat.current_emotion, seat.current_confidence)
+                
+                # Build seat_emotions from seat manager
+                for seat_id in seat_assignments.keys():
+                    seat = self.seat_manager.seats.get(seat_id)
+                    if seat and seat.current_emotion:
+                        seat_emotions[seat_id] = (seat.current_emotion, seat.current_confidence)
             
-            # Build emotions list from cache for drawing
+            # Build emotions list from cache for drawing for drawing
             for box in boxes:
                 face_id = self.get_face_id(box)
                 if face_id in self.cached_emotions:
@@ -174,8 +214,20 @@ class CVStreamProcessor:
         else:
             # No faces detected - update seat manager with empty boxes
             self.seat_manager.update_seats(None, frame, current_time)
+            # No faces detected - update seat manager with empty boxes
+            self.seat_manager.update_seats(None, frame, current_time)
             self.cached_emotions.clear()
             self.sleep_detector.reset_all()
+        
+        # Draw detection boxes and seat assignments
+        frame = self.detector.draw_enhanced_boxes(
+            frame, boxes, probs, landmarks, 
+            seat_assignments=seat_assignments,
+            emotions=seat_emotions
+        )
+        
+        # Draw seat zones overlay
+        frame = self.seat_manager.draw_seat_zones(frame)
         
         # Draw detection boxes and seat assignments
         frame = self.detector.draw_enhanced_boxes(
