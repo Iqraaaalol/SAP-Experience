@@ -16,7 +16,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent  # SAP-Experience root
 APP_DIR = BASE_DIR / "app"
 
 # Ollama/LLM Configuration
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://192.168.0.179:11434")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:3b")
 
 # Database Configuration

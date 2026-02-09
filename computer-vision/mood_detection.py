@@ -7,22 +7,61 @@ from PIL import Image
 import os
 import time
 import numpy as np
-import tempfile
 import argparse
+from collections import deque
 
 # Try to import config locally
 try:
     import config
 except ImportError:
-    # If config not found (e.g. run from different dir), define defaults or rely on fallback
     class Config:
         DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        INPUT_SIZE = (300, 300)
+        INPUT_SIZE = (224, 224)
+        NUM_CLASSES = 7
+        CLASS_NAMES = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
     config = Config()
 
+# Import seat manager from separate module
+from seat_manager import SeatManager, SeatState, SeatCalibrator, CALIBRATION_FILE, create_seat_manager_from_calibration
+
+# Import sleep detector
+from sleep_detector import SleepDetector
+
+
+def run_calibration(video_source, width, height, num_seats):
+    """Run interactive seat calibration."""
+    seat_names = getattr(config, 'SEAT_NAMES', None)
+    if seat_names and len(seat_names) < num_seats:
+        seat_names = None
+    
+    calibrator = SeatCalibrator(
+        frame_width=width,
+        frame_height=height,
+        num_seats=num_seats,
+        seat_names=seat_names[:num_seats] if seat_names else None
+    )
+    
+    video = int(video_source) if video_source.isdigit() else video_source
+    result = calibrator.run(video)
+    
+    if result:
+        create_seat_manager_from_calibration(result, width, height, save_to_file=CALIBRATION_FILE)
+        print(f"Calibration saved to {CALIBRATION_FILE}")
+        return True
+    return False
+
+
 class ConvNeXtEmotionDetector:
-    def __init__(self, model_path="checkpoints/best_convnext_base.pth", num_classes=config.NUM_CLASSES, class_names=None):
+    def __init__(self, model_path=None, num_classes=None, class_names=None):
+        # Use AffectNet fine-tuned model by default if available, otherwise fall back to FER
+        if model_path is None:
+            affectnet_path = os.path.join("checkpoints", getattr(config, 'AFFECTNET_MODEL_PATH', 'affectnet_best_convnext_base.pth'))
+            fer_path = os.path.join("checkpoints", config.BEST_MODEL_PATH)
+            model_path = affectnet_path if os.path.exists(affectnet_path) else fer_path
+        
         self.device = config.DEVICE
+        num_classes = num_classes or getattr(config, 'NUM_CLASSES', 7)
+        sleep_color = getattr(config, 'SLEEP_EMOTION_COLOR', (128, 128, 128))
         base_colors = {
             'angry': (0, 0, 255),       # Red
             'disgust': (0, 128, 0),     # Dark green
@@ -30,7 +69,8 @@ class ConvNeXtEmotionDetector:
             'happy': (0, 255, 0),       # Green
             'neutral': (255, 255, 0),   # Cyan
             'sad': (255, 0, 0),         # Blue
-            'surprise': (255, 0, 255)   # Magenta
+            'surprise': (255, 0, 255),  # Magenta
+            'sleeping': sleep_color     # Gray
         }
         self.emotion_colors = base_colors
     
@@ -55,7 +95,8 @@ class ConvNeXtEmotionDetector:
             'sad': 'distressed',
             'happy': 'happy',
             'neutral': 'neutral',
-            'surprise': 'surprise'
+            'surprise': 'surprise',
+            'sleeping': 'sleeping'
         }
         
         # Define colors for grouped emotions
@@ -63,7 +104,8 @@ class ConvNeXtEmotionDetector:
             'distressed': (0, 0, 255),    # Red for distress
             'happy': (0, 255, 0),         # Green
             'neutral': (255, 255, 0),     # Cyan
-            'surprise': (255, 0, 255)     # Magenta
+            'surprise': (255, 0, 255),    # Magenta
+            'sleeping': sleep_color       # Gray
         }
         
     def align_face(self, image, landmarks):
@@ -180,24 +222,15 @@ class ConvNeXtEmotionDetector:
         original_emotion = self.class_names[pred_idx.item()]
         confidence = conf.item()
         
-        # Map to grouped emotion
-        grouped_emotion = self.emotion_groups.get(original_emotion, original_emotion)
+        # Create original emotion probability dict (not grouped)
+        emotion_dict = {}
+        for i, emotion in enumerate(self.class_names):
+            emotion_dict[emotion] = probs[0][i].item()
         
-        # Create grouped emotion dict by combining probabilities
-        grouped_dict = {}
-        for original, grouped in self.emotion_groups.items():
-            if original in self.class_names:
-                idx = self.class_names.index(original)
-                prob = probs[0][idx].item() * 100
-                if grouped in grouped_dict:
-                    grouped_dict[grouped] += prob
-                else:
-                    grouped_dict[grouped] = prob
-        
-        return grouped_emotion, confidence, grouped_dict
+        return original_emotion, confidence, emotion_dict
 
 class FaceDetector:
-    def __init__(self):
+    def __init__(self, frame_width: int = 1280, frame_height: int = 720, use_seats: bool = True):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {device}")
         
@@ -209,6 +242,16 @@ class FaceDetector:
         )
         
         self.emotion_detector = ConvNeXtEmotionDetector()
+        
+        # Initialize sleep detector
+        self.sleep_detector = SleepDetector()
+        if self.sleep_detector.available:
+            print("Sleep detection enabled (MediaPipe EAR)")
+        else:
+            print("Sleep detection disabled (mediapipe not installed)")
+        
+        # Initialize seat manager
+        self.seat_manager = SeatManager(frame_width, frame_height)
             
         self.fps_history = []
         self.face_history = {} 
@@ -237,15 +280,36 @@ class FaceDetector:
         else:
             return "Far"
     
-    def draw_enhanced_boxes(self, frame, boxes, probs, landmarks, emotions=None):
+    def draw_enhanced_boxes(self, frame, boxes, probs, landmarks, seat_assignments=None, emotions=None):
+        """Draw face boxes with seat assignments.
+        
+        Args:
+            frame: Video frame
+            boxes: Face bounding boxes
+            probs: Detection probabilities
+            landmarks: Facial landmarks
+            seat_assignments: Dict mapping seat_id -> (face_idx, box)
+            emotions: Dict mapping seat_id -> (emotion, confidence)
+        """
         if boxes is None:
             return frame
+        
+        # Create reverse mapping: face_idx -> seat_id
+        face_to_seat = {}
+        if seat_assignments:
+            for seat_id, (face_idx, _) in seat_assignments.items():
+                face_to_seat[face_idx] = seat_id
         
         for i, (box, prob) in enumerate(zip(boxes, probs)):
             x1, y1, x2, y2 = box.astype(int)
             
-            # Color by confidence
-            if prob > 0.95:
+            # Get seat assignment for this face
+            seat_id = face_to_seat.get(i)
+            
+            # Color by seat if assigned, otherwise by confidence
+            if seat_id:
+                color = self.seat_manager.seat_colors.get(seat_id, (0, 255, 0))
+            elif prob > 0.95:
                 color = (0, 255, 0)
             elif prob > 0.85:
                 color = (0, 255, 255)
@@ -261,8 +325,15 @@ class FaceDetector:
             distance = self.estimate_distance(box)
             
             info_y = y1 - 70 if y1 > 100 else y2 + 20
-            cv2.putText(frame, f"Face {i+1}", (x1, info_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            
+            # Show seat ID instead of "Face N" if assigned
+            if seat_id:
+                cv2.putText(frame, f"Seat {seat_id}", (x1, info_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            else:
+                cv2.putText(frame, f"Unassigned", (x1, info_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (128, 128, 128), 2)
+            
             cv2.putText(frame, f"Conf: {prob:.2%}", (x1, info_y + 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             cv2.putText(frame, f"Size: {face_width}x{face_height}", (x1, info_y + 40),
@@ -270,18 +341,15 @@ class FaceDetector:
             cv2.putText(frame, f"Dist: {distance}", (x1, info_y + 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
-            # Draw emotion if available
+            # Draw emotion if available for this seat
             emotion_data = None
-            if emotions:
-                if isinstance(emotions, dict) and i in emotions:
-                    emotion_data = emotions[i]
-                elif isinstance(emotions, list) and i < len(emotions):
-                    emotion_data = emotions[i]
+            if seat_id and emotions and seat_id in emotions:
+                emotion_data = emotions[seat_id]
             
             if emotion_data:
                 emotion, conf = emotion_data
-                # Use grouped emotion colors
-                emotion_color = self.emotion_detector.grouped_colors.get(emotion, (255, 255, 255))
+                # Use original emotion colors
+                emotion_color = self.emotion_detector.emotion_colors.get(emotion, (255, 255, 255))
                 cv2.putText(frame, f"Emotion: {emotion.upper()} ({conf:.0%})", 
                         (x1, info_y + 80),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, emotion_color, 2)
@@ -308,49 +376,108 @@ class FaceDetector:
         cv2.rectangle(overlay, (0, 0), (w, dashboard_height), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
         
-        cv2.putText(frame, "SAP Face Detection Demo", (20, 30),
+        title = "SAP Seat-Based Emotion Detection" if self.use_seats else "SAP Face Detection"
+        cv2.putText(frame, title, (20, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
         num_faces = len(boxes) if boxes is not None else 0        
         cv2.putText(frame, f"Faces: {num_faces}", (20, 60),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
+        # Show seat occupancy summary (only if using seats)
+        if self.use_seats and self.seat_manager:
+            seat_summary = self.seat_manager.get_seat_summary()
+            occupied_count = sum(1 for s in seat_summary.values() if s['occupied'])
+            total_seats = len(seat_summary)
+            cv2.putText(frame, f"Seats: {occupied_count}/{total_seats}", (20, 85),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            # Show individual seat status
+            x_offset = 200
+            for seat_id, info in seat_summary.items():
+                color = self.seat_manager.seat_colors.get(seat_id, (255, 255, 255))
+                status = "●" if info['occupied'] else "○"
+                emotion_str = f" ({info['emotion']})" if info['emotion'] else ""
+                cv2.putText(frame, f"{seat_id}:{status}{emotion_str}", (x_offset, 85),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                x_offset += 150
+        
         device = "GPU" if torch.cuda.is_available() else "CPU"
         cv2.putText(frame, f"Device: {device}", (w - 200, 60),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        cv2.putText(frame, "Press 'q' to quit | 's' to screenshot", (20, h - 20),
+        cv2.putText(frame, "Press 'q' to quit | 's' to screenshot | 'r' to reset | 'c' to calibrate", (20, h - 20),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
         return frame
 
 def main():
-    parser = argparse.ArgumentParser(description='Enhanced Face Detection with Emotion Recognition')
+    parser = argparse.ArgumentParser(description='Seat-Based Face Detection with Emotion Recognition')
     parser.add_argument('--video', type=str, default='0', help='Path to video file or camera index (default: 0 for camera)')
+    parser.add_argument('--width', type=int, default=1280, help='Frame width')
+    parser.add_argument('--height', type=int, default=720, help='Frame height')
+    parser.add_argument('--calibrate', action='store_true', help='Run seat calibration before starting')
+    parser.add_argument('--seats', type=int, default=4, help='Number of seats to calibrate')
+    parser.add_argument('--no-seats', action='store_true', help='Disable seat-based tracking (just detect faces)')
     args = parser.parse_args()
-    
-    detector = FaceDetector()
 
     if args.video.isdigit():
         cap = cv2.VideoCapture(int(args.video))
     else:
         cap = cv2.VideoCapture(args.video)
     
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    
+    # Get actual frame dimensions
+    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Run calibration if requested or if no calibration file exists
+    if args.calibrate and not args.no_seats:
+        cap.release()  # Release for calibrator to use
+        print("\nStarting seat calibration...")
+        run_calibration(args.video, actual_width, actual_height, args.seats)
+        # Reopen capture after calibration
+        if args.video.isdigit():
+            cap = cv2.VideoCapture(int(args.video))
+        else:
+            cap = cv2.VideoCapture(args.video)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    elif args.calibrate and args.no_seats:
+        print("Warning: --calibrate ignored when --no-seats is enabled")
+    
+    # Initialize detector with actual frame size
+    use_seats = not args.no_seats
+    detector = FaceDetector(frame_width=actual_width, frame_height=actual_height, use_seats=use_seats)
     
     screenshot_count = 0
     emotion_update_interval = 0.3  
     last_emotion_update = time.time()
-    cached_emotions = {}  # Persist emotions between frames
+    seat_emotions = {}  # seat_id -> (emotion, confidence)
     
-    print("=" * 50)
-    print("Enhanced Face Detection with Emotion Recognition")
-    print("=" * 50)
+    # Temporal smoothing setup
+    smoothing_window = 5  # number of recent predictions to average
+    emotion_history = {}  # seat_id/face_idx -> deque of prob vectors
+    
+    print("=" * 60)
+    if use_seats:
+        print("SAP Seat-Based Face Detection with Emotion Recognition")
+    else:
+        print("SAP Face Detection with Emotion Recognition")
+    print("=" * 60)
+    print(f"Frame size: {actual_width}x{actual_height}")
+    if use_seats and detector.seat_manager:
+        print(f"Seat grid: {detector.seat_manager.rows}x{detector.seat_manager.cols}")
+        print(f"Vacancy timeout: {detector.seat_manager.vacancy_timeout}s")
     print("Controls:")
     print("  'q' - Quit")
     print("  's' - Save screenshot")
-    print("=" * 50)
+    if use_seats:
+        print("  'r' - Reset all seats")
+        print("  'c' - Calibrate seats")
+    print("=" * 60)
     
     fps_start = time.time()
     fps_counter = 0
@@ -367,67 +494,71 @@ def main():
             fps_counter = 0
             fps_start = time.time()
 
+        current_time = time.time()
+        
+        # Detect faces
         boxes, probs, landmarks = detector.detect_faces(frame)
         
-        # Helper to create stable face IDs based on position
-        def get_face_id(box):
-            cx = int((box[0] + box[2]) / 2 / 50) * 50
-            cy = int((box[1] + box[3]) / 2 / 50) * 50
-            return f"{cx}_{cy}"
+        # Update seat assignments (if seats enabled)
+        seat_assignments = None
+        if use_seats and detector.seat_manager:
+            seat_assignments = detector.seat_manager.update_seats(boxes, frame, current_time)
         
-        emotions_list = []
-        current_time = time.time()
-        current_face_ids = set()
-        
-        if boxes is not None and len(boxes) > 0:
-            # Update emotions if interval passed
-            if (current_time - last_emotion_update) > emotion_update_interval:
-                for i, box in enumerate(boxes):
-                    x1, y1, x2, y2 = box.astype(int)
-                    # Extract face region
-                    face_img = frame[max(0, y1):min(frame.shape[0], y2), max(0, x1):min(frame.shape[1], x2)]
-                    
-                    # Get landmarks for this face (if available)
-                    face_landmarks = None
-                    if landmarks is not None and i < len(landmarks) and landmarks[i] is not None:
-                        # Adjust landmarks to be relative to face crop
-                        face_landmarks = landmarks[i].copy()
-                        face_landmarks[:, 0] -= x1  # Adjust x coordinates
-                        face_landmarks[:, 1] -= y1  # Adjust y coordinates
-                    
-                    if face_img.size > 0:
-                        emotion, conf, _ = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
-                        face_id = get_face_id(box)
-                        cached_emotions[face_id] = (emotion, conf)
-                        current_face_ids.add(face_id)
+        # Update emotions for assigned seats (or all faces if no seats)
+        if (current_time - last_emotion_update) > emotion_update_interval:
+            for seat_id, (face_idx, box) in seat_assignments.items():
+                x1, y1, x2, y2 = box.astype(int)
+                face_img = frame[max(0, y1):min(frame.shape[0], y2), 
+                                max(0, x1):min(frame.shape[1], x2)]
                 
-                last_emotion_update = current_time
-            else:
-                # Just track current face IDs without detecting
-                for box in boxes:
-                    current_face_ids.add(get_face_id(box))
+                if face_img.size > 0:
+                    # Check for sleeping via EAR before running ConvNeXt
+                    if detector.sleep_detector.available:
+                        ear = detector.sleep_detector.compute_ear(face_img)
+                        is_sleeping = detector.sleep_detector.update(seat_id, ear, current_time)
+                    else:
+                        is_sleeping = False
+                    
+                    if is_sleeping:
+                        # Override emotion with sleeping — skip ConvNeXt inference
+                        seat_emotions[seat_id] = ("sleeping", 1.0)
+                        detector.seat_manager.update_seat_emotion(
+                            seat_id, "sleeping", 1.0, {"sleeping": 1.0})
+                    else:
+                        # Normal ConvNeXt emotion detection
+                        face_landmarks = None
+                        if landmarks is not None and face_idx < len(landmarks) and landmarks[face_idx] is not None:
+                            face_landmarks = landmarks[face_idx].copy()
+                            face_landmarks[:, 0] -= x1
+                            face_landmarks[:, 1] -= y1
+                        
+                        emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
+                        seat_emotions[seat_id] = (emotion, conf)
+                        detector.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
             
-            # Build emotions list from cache for each detected face
-            for box in boxes:
-                face_id = get_face_id(box)
-                if face_id in cached_emotions:
-                    emotions_list.append(cached_emotions[face_id])
-                else:
-                    emotions_list.append(None)
-            
-            # Clean up old faces no longer in frame
-            cached_emotions = {k: v for k, v in cached_emotions.items() if k in current_face_ids}
-        else:
-            cached_emotions.clear()
+            last_emotion_update = current_time
         
-        frame = detector.draw_enhanced_boxes(frame, boxes, probs, landmarks, emotions_list)
+        # Clean up emotions and sleep state for vacated seats
+        for seat_id in list(seat_emotions.keys()):
+            if not detector.seat_manager.seats[seat_id].is_occupied:
+                del seat_emotions[seat_id]
+                detector.sleep_detector.reset(seat_id)
         
+        # Draw seat zones first (background)
+        frame = detector.seat_manager.draw_seat_zones(frame)
+        
+        # Draw face boxes with seat assignments
+        frame = detector.draw_enhanced_boxes(frame, boxes, probs, landmarks, 
+                                             seat_assignments, seat_emotions)
+        
+        # Draw dashboard
         frame = detector.add_dashboard(frame, boxes, probs)
         
-        cv2.putText(frame, f"FPS: {fps:.1f}", (frame.shape[1] - 200, 85),
+        cv2.putText(frame, f"FPS: {fps:.1f}", (frame.shape[1] - 200, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        cv2.imshow('SAP Enhanced Face Detection with Emotion', frame)
+        window_title = 'SAP Seat-Based Emotion Detection' if use_seats else 'SAP Face Detection'
+        cv2.imshow(window_title, frame)
         
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -437,6 +568,28 @@ def main():
             cv2.imwrite(screenshot_name, frame)
             print(f"Screenshot saved: {screenshot_name}")
             screenshot_count += 1
+        elif key == ord('r') and use_seats:
+            # Reset all seats
+            detector.seat_manager.reset_all_seats()
+            detector.sleep_detector.reset_all()
+            seat_emotions.clear()
+            print("All seats reset")
+        elif key == ord('c') and use_seats:
+            # Run calibration
+            cap.release()
+            cv2.destroyAllWindows()
+            print("\nStarting seat calibration...")
+            if run_calibration(args.video, actual_width, actual_height, len(detector.seat_manager.seats)):
+                # Reload seat manager with new calibration
+                detector.seat_manager = SeatManager(actual_width, actual_height)
+            # Reopen capture
+            if args.video.isdigit():
+                cap = cv2.VideoCapture(int(args.video))
+            else:
+                cap = cv2.VideoCapture(args.video)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+            seat_emotions.clear()
     
     cap.release()
     cv2.destroyAllWindows()
