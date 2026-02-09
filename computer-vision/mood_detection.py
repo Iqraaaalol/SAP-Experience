@@ -434,13 +434,9 @@ def main():
     detector = FaceDetector(frame_width=actual_width, frame_height=actual_height, use_seats=use_seats)
     
     screenshot_count = 0
-    emotion_update_interval = 0.3  
+    emotion_update_interval = 0.3  # Sampling rate (SeatManager handles smoothing)
     last_emotion_update = time.time()
     seat_emotions = {}  # seat_id -> (emotion, confidence)
-    
-    # Temporal smoothing setup
-    smoothing_window = 5  # number of recent predictions to average
-    emotion_history = {}  # seat_id/face_idx -> deque of prob vectors
     
     print("=" * 60)
     if use_seats:
@@ -501,26 +497,18 @@ def main():
                         face_landmarks[:, 1] -= y1
                     
                     if face_img.size > 0:
-                        # Get raw emotion detection
+                        # Get raw emotion detection (SeatManager handles temporal smoothing)
                         emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
                         
-                        # Apply temporal smoothing
-                        classes = detector.emotion_detector.class_names
-                        prob_vec = np.array([emotion_probs.get(c, 0.0) for c in classes])
+                        # Pass raw probabilities to SeatManager for smoothing
+                        detector.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
                         
-                        if seat_id not in emotion_history:
-                            emotion_history[seat_id] = deque(maxlen=smoothing_window)
-                        emotion_history[seat_id].append(prob_vec)
-                        
-                        # Compute moving average
-                        avg_probs = np.mean(np.array(emotion_history[seat_id]), axis=0)
-                        smoothed_idx = int(np.argmax(avg_probs))
-                        smoothed_emotion = classes[smoothed_idx]
-                        smoothed_conf = float(avg_probs[smoothed_idx])
-                        smoothed_probs = {c: float(avg_probs[i]) for i, c in enumerate(classes)}
-                        
-                        seat_emotions[seat_id] = (smoothed_emotion, smoothed_conf)
-                        detector.seat_manager.update_seat_emotion(seat_id, smoothed_emotion, smoothed_conf, smoothed_probs)
+                        # Get smoothed emotion from seat manager
+                        seat = detector.seat_manager.seats.get(seat_id)
+                        if seat and seat.current_emotion:
+                            seat_emotions[seat_id] = (seat.current_emotion, seat.current_confidence)
+                        else:
+                            seat_emotions[seat_id] = (emotion, conf)
             else:
                 # No seats mode - detect emotions for all faces
                 if boxes is not None:
@@ -539,21 +527,8 @@ def main():
                             # Get raw emotion detection
                             emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
                             
-                            # Apply temporal smoothing
-                            classes = detector.emotion_detector.class_names
-                            prob_vec = np.array([emotion_probs.get(c, 0.0) for c in classes])
-                            
-                            if i not in emotion_history:
-                                emotion_history[i] = deque(maxlen=smoothing_window)
-                            emotion_history[i].append(prob_vec)
-                            
-                            # Compute moving average
-                            avg_probs = np.mean(np.array(emotion_history[i]), axis=0)
-                            smoothed_idx = int(np.argmax(avg_probs))
-                            smoothed_emotion = classes[smoothed_idx]
-                            smoothed_conf = float(avg_probs[smoothed_idx])
-                            
-                            seat_emotions[i] = (smoothed_emotion, smoothed_conf)  # Use face index as key
+                            # In no-seats mode, use raw detection (no smoothing available)
+                            seat_emotions[i] = (emotion, conf)  # Use face index as key
             
             last_emotion_update = current_time
         

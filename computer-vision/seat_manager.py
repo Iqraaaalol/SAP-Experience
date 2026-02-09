@@ -89,7 +89,7 @@ class SeatManager:
         self.frame_height = frame_height
         self.rows = rows or getattr(config, 'SEAT_GRID_ROWS', 2)
         self.cols = cols or getattr(config, 'SEAT_GRID_COLS', 2)
-        self.vacancy_timeout = vacancy_timeout or getattr(config, 'SEAT_VACANCY_TIMEOUT', 5.0)
+        self.vacancy_timeout = vacancy_timeout or getattr(config, 'SEAT_VACANCY_TIMEOUT', 3.0)
         self.embedding_threshold = embedding_threshold or getattr(config, 'SEAT_EMBEDDING_THRESHOLD', 0.7)
         self.seat_names = getattr(config, 'SEAT_NAMES', None)
         self.calibration_file = calibration_file or CALIBRATION_FILE

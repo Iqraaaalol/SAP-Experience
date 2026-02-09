@@ -269,8 +269,3 @@ class ChromaDBManager:
             })
         
         return search_results
-    
-    def persist(self):
-        """Persist the collection to disk"""
-        # No longer needed in Chroma v1.0.0+ - writes are saved instantly
-        pass

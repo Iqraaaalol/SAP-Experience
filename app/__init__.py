@@ -1,3 +1,0 @@
-"""
-Travel Assistant Application Package
-"""

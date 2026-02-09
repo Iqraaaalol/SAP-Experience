@@ -135,8 +135,13 @@ DEFAULT BEHAVIOR: Answer directly. Only call the function when the passenger cle
 Examples:
 User: "What's your name?" → Answer: "I'm Avia, your in-flight assistant!"
 User: "Can I get some water?" → Call: request_service("water")
-User: "What drinks are available?" → Answer: request_service("Information")
+User: "What drinks are available?" → Answer: request_service("In-Flight Information")
 User: "I'd like a coffee" → Call: request_service("coffee")
+
+# Negative examples - short replies or conversational prompts should NOT trigger a service call
+User: "Yes, I would like to know about that." → Answer: "Sure — here's more information about that." (DO NOT CALL)
+User: "How are you?" → Answer: "I'm fine, thank you! How can I help you today?" (DO NOT CALL)
+
 """
 
             messages = [

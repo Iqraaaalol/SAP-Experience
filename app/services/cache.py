@@ -149,7 +149,5 @@ class ConversationHistory:
         self._cleanup_expired()
         return len(self.histories)
 
-
-# Singleton instances
 query_cache = QueryCache()
 conversation_history = ConversationHistory()
