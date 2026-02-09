@@ -21,7 +21,7 @@ CLASSIFIER_LR = 1e-4
 # Model Configuration
 NUM_CLASSES = 7
 CLASS_NAMES = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
-MODEL_NAME = "convnext_tiny"
+MODEL_NAME = "convnext_base"
 PRETRAINED = True
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -44,8 +44,9 @@ TRAIN_DIR = AFFECTNET_TRAIN_DIR
 TEST_DIR = AFFECTNET_TEST_DIR
 
 CHECKPOINT_DIR = "checkpoints"
-BEST_MODEL_PATH = "best_convnext_base.pth"
-FER_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, "best_convnext_base.pth")  # Path to FER-trained model
+BEST_MODEL_PATH = "best_convnext_base.pth"  # FER-only trained model
+AFFECTNET_MODEL_PATH = "affectnet_best_convnext_base.pth"  # AffectNet fine-tuned model
+FER_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, BEST_MODEL_PATH)  # Path to FER-trained model for fine-tuning
 
 # Seat Configuration (for mood_detection.py)
 SEAT_GRID_ROWS = 2
@@ -53,3 +54,8 @@ SEAT_GRID_COLS = 2
 SEAT_VACANCY_TIMEOUT = 5.0  # Seconds before seat can be reassigned
 SEAT_EMBEDDING_THRESHOLD = 0.7  # Cosine similarity threshold for face re-ID
 SEAT_NAMES = ["1A", "1B", "2A", "2B"]  # Row-major order: top-left, top-right, bottom-left, bottom-right
+
+# Sleep Detection Configuration (MediaPipe EAR-based)
+EAR_THRESHOLD = 0.25        # Below this Eye Aspect Ratio, eyes are considered closed
+SLEEP_DURATION = 3.0        # Seconds of sustained eye closure to trigger sleeping state
+SLEEP_EMOTION_COLOR = (128, 128, 128)  # Gray color for sleeping overlay (BGR)
