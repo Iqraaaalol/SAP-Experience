@@ -26,6 +26,7 @@ from seat_manager import SeatManager, SeatState, SeatCalibrator, CALIBRATION_FIL
 
 # Import sleep detector
 from sleep_detector import SleepDetector
+from attention import CoordinateAttention
 
 
 def run_calibration(video_source, width, height, num_seats):
@@ -168,20 +169,50 @@ class ConvNeXtEmotionDetector:
         except ImportError:
             model = models.convnext_base(pretrained=False)
             
-        # Re-create classifier head
+        # Re-create classifier head. If checkpoint used CoordinateAttention, we'll insert it below
         in_features = model.classifier[2].in_features
         model.classifier[2] = nn.Linear(in_features, num_classes)
         
         if os.path.exists(model_path):
             checkpoint = torch.load(model_path, map_location=self.device)
+
+            # If checkpoint indicates CoordinateAttention was used, insert it into classifier
+            ck_used_ca = False
+            if isinstance(checkpoint, dict):
+                ck_used_ca = checkpoint.get('used_coord_attn', False)
+
+            if ck_used_ca:
+                try:
+                    print("Checkpoint was trained with CoordinateAttention — adding CA to classifier...")
+                    layer_norm = model.classifier[0]
+                    flatten = model.classifier[1]
+                    model.classifier = nn.Sequential(
+                        layer_norm,
+                        CoordinateAttention(channels=1024, reduction=32),
+                        flatten,
+                        nn.Linear(1024, num_classes)
+                    )
+                    print("✓ CoordinateAttention added to classifier")
+                except Exception as e:
+                    print(f"Warning: failed to add CoordinateAttention to classifier: {e}")
+
             # handle if 'model_state_dict' is key or direct state dict
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-                if 'class_names' in checkpoint:
+            state_dict = checkpoint['model_state_dict'] if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint else checkpoint
+            try:
+                model.load_state_dict(state_dict)
+                if isinstance(checkpoint, dict) and 'class_names' in checkpoint:
                     self.class_names = checkpoint['class_names'] 
-            else:
-                model.load_state_dict(checkpoint)
-            print("Custom model loaded successfully.")
+                print("Custom model loaded successfully.")
+            except RuntimeError as e:
+                print(f"Warning: strict model load failed: {e}")
+                try:
+                    model.load_state_dict(state_dict, strict=False)
+                    print("Loaded model with strict=False (partial match).")
+                    if isinstance(checkpoint, dict) and 'class_names' in checkpoint:
+                        self.class_names = checkpoint['class_names'] 
+                except Exception as e2:
+                    print(f"Error: failed to load model state dict: {e2}")
+                    raise
         else:
             print(f"Warning: Model checkpoint {model_path} not found. Using random weights.")
             
@@ -250,8 +281,12 @@ class FaceDetector:
         else:
             print("Sleep detection disabled (mediapipe not installed)")
         
-        # Initialize seat manager
-        self.seat_manager = SeatManager(frame_width, frame_height)
+        # Seat-based tracking may be disabled; store flag and init only when enabled
+        self.use_seats = use_seats
+        if self.use_seats:
+            self.seat_manager = SeatManager(frame_width, frame_height)
+        else:
+            self.seat_manager = None
             
         self.fps_history = []
         self.face_history = {} 
@@ -504,48 +539,52 @@ def main():
         if use_seats and detector.seat_manager:
             seat_assignments = detector.seat_manager.update_seats(boxes, frame, current_time)
         
-        # Update emotions for assigned seats (or all faces if no seats)
+        # Update emotions for assigned seats (only when seats are enabled)
         if (current_time - last_emotion_update) > emotion_update_interval:
-            for seat_id, (face_idx, box) in seat_assignments.items():
-                x1, y1, x2, y2 = box.astype(int)
-                face_img = frame[max(0, y1):min(frame.shape[0], y2), 
-                                max(0, x1):min(frame.shape[1], x2)]
-                
-                if face_img.size > 0:
-                    # Check for sleeping via EAR before running ConvNeXt
-                    if detector.sleep_detector.available:
-                        ear = detector.sleep_detector.compute_ear(face_img)
-                        is_sleeping = detector.sleep_detector.update(seat_id, ear, current_time)
-                    else:
-                        is_sleeping = False
+            if seat_assignments and detector.use_seats and detector.seat_manager:
+                for seat_id, (face_idx, box) in seat_assignments.items():
+                    x1, y1, x2, y2 = box.astype(int)
+                    face_img = frame[max(0, y1):min(frame.shape[0], y2), 
+                                    max(0, x1):min(frame.shape[1], x2)]
                     
-                    if is_sleeping:
-                        # Override emotion with sleeping — skip ConvNeXt inference
-                        seat_emotions[seat_id] = ("sleeping", 1.0)
-                        detector.seat_manager.update_seat_emotion(
-                            seat_id, "sleeping", 1.0, {"sleeping": 1.0})
-                    else:
-                        # Normal ConvNeXt emotion detection
-                        face_landmarks = None
-                        if landmarks is not None and face_idx < len(landmarks) and landmarks[face_idx] is not None:
-                            face_landmarks = landmarks[face_idx].copy()
-                            face_landmarks[:, 0] -= x1
-                            face_landmarks[:, 1] -= y1
+                    if face_img.size > 0:
+                        # Check for sleeping via EAR before running ConvNeXt
+                        if detector.sleep_detector.available:
+                            ear = detector.sleep_detector.compute_ear(face_img)
+                            is_sleeping = detector.sleep_detector.update(seat_id, ear, current_time)
+                        else:
+                            is_sleeping = False
                         
-                        emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
-                        seat_emotions[seat_id] = (emotion, conf)
-                        detector.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
-            
+                        if is_sleeping:
+                            # Override emotion with sleeping — skip ConvNeXt inference
+                            seat_emotions[seat_id] = ("sleeping", 1.0)
+                            detector.seat_manager.update_seat_emotion(
+                                seat_id, "sleeping", 1.0, {"sleeping": 1.0})
+                        else:
+                            # Normal ConvNeXt emotion detection
+                            face_landmarks = None
+                            if landmarks is not None and face_idx < len(landmarks) and landmarks[face_idx] is not None:
+                                face_landmarks = landmarks[face_idx].copy()
+                                face_landmarks[:, 0] -= x1
+                                face_landmarks[:, 1] -= y1
+                            
+                            emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
+                            seat_emotions[seat_id] = (emotion, conf)
+                            detector.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
+
+            # (If seats are disabled we currently skip per-face emotion updates here.)
             last_emotion_update = current_time
         
-        # Clean up emotions and sleep state for vacated seats
-        for seat_id in list(seat_emotions.keys()):
-            if not detector.seat_manager.seats[seat_id].is_occupied:
-                del seat_emotions[seat_id]
-                detector.sleep_detector.reset(seat_id)
+        # Clean up emotions and sleep state for vacated seats (only when seat manager exists)
+        if detector.use_seats and detector.seat_manager:
+            for seat_id in list(seat_emotions.keys()):
+                if not detector.seat_manager.seats[seat_id].is_occupied:
+                    del seat_emotions[seat_id]
+                    detector.sleep_detector.reset(seat_id)
         
-        # Draw seat zones first (background)
-        frame = detector.seat_manager.draw_seat_zones(frame)
+        # Draw seat zones first (background) when seat manager is available
+        if detector.use_seats and detector.seat_manager:
+            frame = detector.seat_manager.draw_seat_zones(frame)
         
         # Draw face boxes with seat assignments
         frame = detector.draw_enhanced_boxes(frame, boxes, probs, landmarks, 

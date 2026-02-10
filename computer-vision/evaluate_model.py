@@ -13,26 +13,52 @@ from data_preprocessing import get_data_loaders
 
 def load_trained_model(checkpoint_path, num_classes):
     """Loads the model architecture and weights from checkpoint."""
-    # Re-initialize architecture
+    # Load checkpoint first to detect architecture flags
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=config.DEVICE)
+    ck_used_ca = checkpoint.get('used_coord_attn', False)
+
+    # Re-initialize ConvNeXt base
     try:
         from torchvision.models import ConvNeXt_Base_Weights
-        model = models.convnext_base(weights=None) # No pretrained weights needed, loading custom
+        model = models.convnext_base(weights=None)
     except ImportError:
         model = models.convnext_base(pretrained=False)
-    
-    # ConvNeXt's classifier is Sequential: [LayerNorm, Flatten, Linear]
-    # The Linear layer is at index 2
-    in_features = model.classifier[2].in_features
-    model.classifier[2] = nn.Linear(in_features, num_classes)
-    
-    # Load weights
-    if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location=config.DEVICE)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Loaded model from {checkpoint_path} (Acc: {checkpoint['accuracy']:.2f}%)")
+
+    # If checkpoint used CoordinateAttention, insert it before classifier to match saved keys
+    if ck_used_ca:
+        try:
+            from attention import CoordinateAttention
+            layer_norm = model.classifier[0]
+            flatten = model.classifier[1]
+            model.classifier = nn.Sequential(
+                layer_norm,
+                CoordinateAttention(channels=1024, reduction=32),
+                flatten,
+                nn.Linear(1024, num_classes)
+            )
+            print("Building model with CoordinateAttention to match checkpoint...")
+        except Exception as e:
+            print(f"Warning: failed to construct CoordinateAttention module: {e}")
     else:
-        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
-        
+        in_features = model.classifier[2].in_features
+        model.classifier[2] = nn.Linear(in_features, num_classes)
+
+    # Try to load state dict; prefer strict load, fallback to non-strict with info
+    try:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded model from {checkpoint_path} (Acc: {checkpoint.get('accuracy', 0.0):.2f}%)")
+    except RuntimeError as e:
+        print(f"Warning: strict state_dict load failed: {e}\nAttempting non-strict load...")
+        try:
+            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            print(f"Loaded model (non-strict) from {checkpoint_path}; some keys were mismatched.")
+        except Exception as e2:
+            print(f"Error: failed to load checkpoint even with strict=False: {e2}")
+            raise
+
     return model.to(config.DEVICE)
 
 def evaluate_model():

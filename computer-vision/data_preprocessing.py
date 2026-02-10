@@ -141,11 +141,20 @@ def get_data_loaders(data_dir=None, batch_size=config.BATCH_SIZE, num_workers=co
 
     base_train_dataset = datasets.ImageFolder(train_dir)
     class_names = base_train_dataset.classes
-    train_indices, val_indices = _split_indices(len(base_train_dataset), config.VAL_SPLIT)
 
-    # Apply transforms after splitting to avoid augmenting validation set
-    train_dataset = Subset(datasets.ImageFolder(train_dir, transform=train_trans), train_indices)
-    val_dataset = Subset(datasets.ImageFolder(train_dir, transform=val_trans), val_indices)
+    # If a separate 'val' folder exists use it directly, otherwise split train
+    val_dir = os.path.join(data_dir, "val")
+    if os.path.isdir(val_dir) and any(os.scandir(val_dir)):
+        print("Found 'val' directory; using it for validation (no split).")
+        train_dataset = datasets.ImageFolder(train_dir, transform=train_trans)
+        val_dataset = datasets.ImageFolder(val_dir, transform=val_trans)
+    else:
+        train_indices, val_indices = _split_indices(len(base_train_dataset), config.VAL_SPLIT)
+
+        # Apply transforms after splitting to avoid augmenting validation set
+        train_dataset = Subset(datasets.ImageFolder(train_dir, transform=train_trans), train_indices)
+        val_dataset = Subset(datasets.ImageFolder(train_dir, transform=val_trans), val_indices)
+
     test_dataset = datasets.ImageFolder(test_dir, transform=val_trans)
 
     print("Dataset Stats:")

@@ -130,6 +130,88 @@ def create_model(num_classes, pretrained=True, load_from_checkpoint=None, use_co
     
     return model.to(config.DEVICE)
 
+
+def load_checkpoint_resume(path, model, optimizer=None, ema=None, scaler=None, scheduler=None, device=None):
+    """
+    Load a training checkpoint to resume training. Restores model weights and optional optimizer,
+    EMA, scaler and scheduler states. Returns (start_epoch, best_acc, epochs_without_improvement).
+    """
+    if device is None:
+        device = config.DEVICE
+
+    if not path or not os.path.exists(path):
+        return 0, 0.0, 0
+
+    print(f"Resuming training from checkpoint: {path}")
+    checkpoint = torch.load(path, map_location=device)
+
+    # Detect CoordinateAttention architecture mismatch early and provide a clear error
+    ck_used_ca = checkpoint.get('used_coord_attn', False)
+    try:
+        model_has_ca = any(isinstance(m, CoordinateAttention) for m in model.modules())
+    except Exception:
+        model_has_ca = False
+
+    if ck_used_ca != model_has_ca:
+        raise ValueError(
+            f"Architecture mismatch: checkpoint used_coord_attn={ck_used_ca} but current model has CoordinateAttention={model_has_ca}.\n"
+            f"Set config.USE_COORD_ATTN to {ck_used_ca} or recreate the model to match the checkpoint."
+        )
+
+    # Load model weights (try strict first, fallback to non-strict with warning)
+    try:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    except RuntimeError as e:
+        print(f"Warning: strict model load failed: {e}")
+        try:
+            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            print("Loaded model with strict=False (partial match).")
+        except Exception as e2:
+            print(f"Error: failed to load model state dict even with strict=False: {e2}")
+            raise
+
+    # EMA
+    if ema is not None and checkpoint.get('ema_state_dict', None) is not None:
+        try:
+            ema.load_state_dict(checkpoint['ema_state_dict'])
+        except Exception:
+            print("Warning: failed to load EMA state dict from checkpoint")
+
+    # Optimizer
+    if optimizer is not None and checkpoint.get('optimizer_state_dict', None) is not None:
+        try:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+            # Ensure optimizer state tensors are on the correct device
+            opt_device = device if device is not None else config.DEVICE
+            for state in optimizer.state.values():
+                for k, v in list(state.items()):
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(opt_device)
+        except Exception:
+            print("Warning: failed to load optimizer state dict from checkpoint")
+
+    # Scaler (AMP)
+    if scaler is not None and checkpoint.get('scaler_state_dict', None) is not None:
+        try:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        except Exception:
+            print("Warning: failed to load scaler state dict from checkpoint")
+
+    # Scheduler
+    if scheduler is not None and checkpoint.get('scheduler_state_dict', None) is not None:
+        try:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        except Exception:
+            print("Warning: failed to load scheduler state dict from checkpoint")
+
+    start_epoch = checkpoint.get('epoch', -1) + 1
+    best_acc = checkpoint.get('accuracy', checkpoint.get('best_acc', 0.0))
+    epochs_without_improvement = checkpoint.get('epochs_without_improvement', 0)
+
+    print(f"Resuming from epoch {start_epoch} (best_acc={best_acc})")
+    return start_epoch, best_acc, epochs_without_improvement
+
 def freeze_backbone(model):
     """
     Freeze all backbone layers, keeping only classifier trainable.
@@ -255,6 +337,9 @@ def validate(model, loader, criterion, use_ema=None):
 def main():
     # 1. Determine training mode and dataset type
     checkpoint_path = config.FER_CHECKPOINT_PATH if os.path.exists(config.FER_CHECKPOINT_PATH) else None
+    # Optional resume checkpoint (set via config.RESUME_CHECKPOINT_PATH)
+    resume_path = config.RESUME_CHECKPOINT_PATH if (getattr(config, 'RESUME_CHECKPOINT_PATH', None) and os.path.exists(config.RESUME_CHECKPOINT_PATH)) else None
+    start_epoch = 0
     
     if checkpoint_path:
         # Fine-tuning on AffectNet
@@ -287,13 +372,13 @@ def main():
             config.NUM_CLASSES,
             pretrained=False,
             load_from_checkpoint=checkpoint_path,
-            use_coord_attn=(dataset_type == 'affectnet' and getattr(config, 'USE_COORD_ATTN', False))
+            use_coord_attn=config.USE_COORD_ATTN
         )
     else:
         model = create_model(
             config.NUM_CLASSES,
             pretrained=config.PRETRAINED,
-            use_coord_attn=(dataset_type == 'affectnet' and getattr(config, 'USE_COORD_ATTN', False))
+            use_coord_attn=config.USE_COORD_ATTN
         )
     
     # 4. Setup Training Components
@@ -342,8 +427,14 @@ def main():
         optimizer = optim.AdamW(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.NUM_EPOCHS)
         scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
-        
-        for epoch in range(config.NUM_EPOCHS):
+
+        # If user provided a resume checkpoint, load optimizer/ema/scaler/scheduler and pick up epoch
+        if resume_path:
+            start_epoch, best_acc, epochs_without_improvement = load_checkpoint_resume(
+                resume_path, model, optimizer=optimizer, ema=ema, scaler=scaler, scheduler=scheduler
+            )
+
+        for epoch in range(start_epoch, config.NUM_EPOCHS):
             print(f"\nEpoch {epoch+1}/{config.NUM_EPOCHS}")
             
             train_loss, train_acc = train_one_epoch(
@@ -368,7 +459,10 @@ def main():
                     'optimizer_state_dict': optimizer.state_dict(),
                     'accuracy': best_acc,
                     'class_names': class_names,
-                    'used_coord_attn': config.USE_COORD_ATTN  # Track architecture
+                    'used_coord_attn': config.USE_COORD_ATTN,  # Track architecture
+                    'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+                    'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+                    'epochs_without_improvement': epochs_without_improvement
                 }, save_path)
                 print(f"Checkpointed best model (with EMA) to {save_path}")
             else:
@@ -394,6 +488,10 @@ def main():
         
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.FREEZE_BACKBONE_EPOCHS)
         scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
+        if resume_path:
+            _, best_acc, epochs_without_improvement = load_checkpoint_resume(
+                resume_path, model, optimizer=optimizer, ema=ema, scaler=scaler, scheduler=scheduler
+            )
         
         for epoch in range(config.FREEZE_BACKBONE_EPOCHS):
             print(f"\nEpoch {epoch+1}/{config.FREEZE_BACKBONE_EPOCHS}")
@@ -421,7 +519,10 @@ def main():
                     'accuracy': best_acc,
                     'class_names': class_names,
                     'phase': 'frozen',
-                    'used_coord_attn': config.USE_COORD_ATTN  # Track architecture
+                    'used_coord_attn': config.USE_COORD_ATTN,  # Track architecture
+                    'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+                    'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+                    'epochs_without_improvement': epochs_without_improvement
                 }, save_path)
                 print(f"Checkpointed best model (with EMA) to {save_path}")
             else:
@@ -457,6 +558,10 @@ def main():
             scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=remaining_epochs)
             scaler = torch.amp.GradScaler('cuda') if config.DEVICE.type == 'cuda' else None
             epochs_without_improvement = 0  # Reset for Phase 2
+            if resume_path:
+                _, best_acc, epochs_without_improvement = load_checkpoint_resume(
+                    resume_path, model, optimizer=optimizer, ema=ema, scaler=scaler, scheduler=scheduler
+                )
             
             for epoch in range(remaining_epochs):
                 current_epoch = config.FREEZE_BACKBONE_EPOCHS + epoch + 1
@@ -485,7 +590,10 @@ def main():
                         'accuracy': best_acc,
                         'class_names': class_names,
                         'phase': 'unfrozen',
-                        'used_coord_attn': config.USE_COORD_ATTN  # Track architecture
+                        'used_coord_attn': config.USE_COORD_ATTN,  # Track architecture
+                        'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+                        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+                        'epochs_without_improvement': epochs_without_improvement
                     }, save_path)
                     print(f"Checkpointed best model (with EMA) to {save_path}")
                 else:
