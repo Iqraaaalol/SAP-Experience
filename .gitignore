@@ -194,3 +194,4 @@ computer-vision/seat_calibration.json
 knowledge_base/wikivoyage.xml
 knowledge_base/wikivoyage.xml.bz2
 checkpoints/affectnet_best_convnext_base.pth
+computer-vision/test.py

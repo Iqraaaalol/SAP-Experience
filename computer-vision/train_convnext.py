@@ -55,50 +55,79 @@ class ModelEMA:
 
 def create_model(num_classes, pretrained=True, load_from_checkpoint=None, use_coord_attn=None):
     """
-    Initialize ConvNeXt-Base model.
-    Args:
-        num_classes: Number of output classes
-        pretrained: If True and load_from_checkpoint is None, load ImageNet weights
-        load_from_checkpoint: Path to checkpoint file to load model weights from
+    Initialize ConvNeXt-Base model with optional Coordinate Attention.
+    Fixed version that properly integrates CA before the classifier.
     """
     print(f"Initializing ConvNeXt-Base with {num_classes} output classes...")
     
-    # Load model with weights enum if available in newer torchvision
+    # Load base model
     try:
         from torchvision.models import ConvNeXt_Base_Weights
         weights = ConvNeXt_Base_Weights.DEFAULT if (pretrained and load_from_checkpoint is None) else None
         model = models.convnext_base(weights=weights)
     except ImportError:
-        # Fallback for older torchvision versions
         model = models.convnext_base(pretrained=(pretrained and load_from_checkpoint is None))
     
-    # Modify classifier for our number of classes
-    # ConvNeXt's classifier is Sequential: [LayerNorm, Flatten, Linear]
-    # The Linear layer is at index 2
-    in_features = model.classifier[2].in_features
-    model.classifier[2] = nn.Linear(in_features, num_classes)
+    # Decide whether to use Coordinate Attention
+    use_ca = use_coord_attn if use_coord_attn is not None else getattr(config, 'USE_COORD_ATTN', False)
+    
+    if use_ca:
+        print("Adding Coordinate Attention before classifier...")
+        
+        # Get classifier components
+        layer_norm = model.classifier[0]
+        flatten = model.classifier[1]
+        
+        # Create new classifier with CA
+        # After features: (N, 1024, H, W)
+        # After LayerNorm: still (N, 1024, H, W)
+        # CA expects (N, C, H, W) ✓
+        # After Flatten: (N, 1024)
+        
+        model.classifier = nn.Sequential(
+            layer_norm,
+            CoordinateAttention(channels=1024, reduction=32),  # Add CA here
+            flatten,
+            nn.Linear(1024, num_classes)
+        )
+        print("✓ Coordinate Attention added before classifier")
+    else:
+        # Standard classifier modification
+        in_features = model.classifier[2].in_features
+        model.classifier[2] = nn.Linear(in_features, num_classes)
     
     # Load from checkpoint if specified
     if load_from_checkpoint and os.path.exists(load_from_checkpoint):
         print(f"Loading weights from checkpoint: {load_from_checkpoint}")
         checkpoint = torch.load(load_from_checkpoint, map_location=config.DEVICE)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')} with accuracy {checkpoint.get('accuracy', 'unknown'):.2f}%")
-
-    # Decide whether to attach Coordinate Attention. Priority:
-    # 1) explicit `use_coord_attn` argument, 2) config.USE_COORD_ATTN flag
-    use_ca = use_coord_attn if use_coord_attn is not None else getattr(config, 'USE_COORD_ATTN', False)
-
-    if use_ca:
-        ca = CoordinateAttention(in_features)
-        if hasattr(model, 'features') and isinstance(model.features, nn.Sequential):
-            # Append CA as the final stage of features
-            model.features = nn.Sequential(*list(model.features.children()), ca)
-        else:
-            # Fallback: wrap existing features in Sequential
-            orig_features = model.features if hasattr(model, 'features') else None
-            model.features = nn.Sequential(orig_features, ca)
-
+        
+        # Check if architecture matches
+        checkpoint_ca = checkpoint.get('used_coord_attn', False)
+        if use_ca != checkpoint_ca:
+            raise ValueError(
+                f"\n{'='*70}\n"
+                f"ARCHITECTURE MISMATCH ERROR!\n"
+                f"{'='*70}\n"
+                f"Checkpoint was trained with USE_COORD_ATTN={checkpoint_ca}\n"
+                f"Current config has USE_COORD_ATTN={use_ca}\n\n"
+                f"Please set USE_COORD_ATTN={checkpoint_ca} in config.py to match the checkpoint.\n"
+                f"{'='*70}"
+            )
+        
+        try:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"✓ Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}")
+            print(f"✓ Architecture: USE_COORD_ATTN={checkpoint_ca}")
+        except RuntimeError as e:
+            print(f"\n{'='*70}")
+            print(f"ERROR: Failed to load checkpoint!")
+            print(f"{'='*70}")
+            print(f"Error details: {e}")
+            print(f"\nThis indicates a serious architecture mismatch.")
+            print(f"Cannot continue with random weights - this would destroy fine-tuning.")
+            print(f"{'='*70}\n")
+            raise  # Don't continue - FAIL LOUDLY
+    
     return model.to(config.DEVICE)
 
 def freeze_backbone(model):
@@ -231,20 +260,21 @@ def main():
         # Fine-tuning on AffectNet
         print("\n=== Fine-tuning from FER checkpoint ===")
         dataset_type = 'affectnet'
-        deployment_mode = 'production'  # Change to 'demo' for classroom testing
+        deployment_mode = 'demo'  # Change to 'demo' for classroom testing
         use_two_phase = config.FREEZE_BACKBONE_EPOCHS > 0
     else:
         # Initial training on FER
         print("\n=== Training from ImageNet pretrained weights ===")
         dataset_type = 'fer'
-        deployment_mode = 'production'  # Not used for FER, but kept for consistency
+        deployment_mode = 'demo'  # Not used for FER, but kept for consistency
         use_two_phase = False
     
     # 2. Setup Data with appropriate augmentation strategy
     print(f"Setting up data loaders for {dataset_type} dataset...")
     train_loader, val_loader, test_loader, class_names = get_data_loaders(
         dataset_type=dataset_type,
-        deployment_mode=deployment_mode
+        deployment_mode=deployment_mode,
+        use_weighted_sampler=config.USE_WEIGHTED_SAMPLER
     )
     
     if train_loader is None:
@@ -337,7 +367,8 @@ def main():
                     'ema_state_dict': ema.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'accuracy': best_acc,
-                    'class_names': class_names
+                    'class_names': class_names,
+                    'used_coord_attn': config.USE_COORD_ATTN  # Track architecture
                 }, save_path)
                 print(f"Checkpointed best model (with EMA) to {save_path}")
             else:
@@ -389,7 +420,8 @@ def main():
                     'optimizer_state_dict': optimizer.state_dict(),
                     'accuracy': best_acc,
                     'class_names': class_names,
-                    'phase': 'frozen'
+                    'phase': 'frozen',
+                    'used_coord_attn': config.USE_COORD_ATTN  # Track architecture
                 }, save_path)
                 print(f"Checkpointed best model (with EMA) to {save_path}")
             else:
@@ -452,7 +484,8 @@ def main():
                         'optimizer_state_dict': optimizer.state_dict(),
                         'accuracy': best_acc,
                         'class_names': class_names,
-                        'phase': 'unfrozen'
+                        'phase': 'unfrozen',
+                        'used_coord_attn': config.USE_COORD_ATTN  # Track architecture
                     }, save_path)
                     print(f"Checkpointed best model (with EMA) to {save_path}")
                 else:

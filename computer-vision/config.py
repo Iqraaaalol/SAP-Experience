@@ -15,12 +15,12 @@ WEIGHT_DECAY = 1e-4
 VAL_SPLIT = 0.1
 RANDOM_SEED = 42
 
-# Advanced Training Techniques
-LABEL_SMOOTHING = 0.1  # Label smoothing for noisy annotations
-MIXUP_ALPHA = 0.2  # MixUp augmentation strength (0 = disabled)
-USE_CLASS_WEIGHTS = True  # Use class-balanced loss for imbalanced datasets
-EMA_DECAY = 0.9999  # Exponential Moving Average decay rate
-USE_COORD_ATTN = True  # If True, attach CoordinateAttention to ConvNeXt features
+LABEL_SMOOTHING = 0.1
+MIXUP_ALPHA = 0.2
+USE_CLASS_WEIGHTS = False  # ← Use class weights in loss (not recommended with weighted sampler)
+USE_WEIGHTED_SAMPLER = True  # ← Use WeightedRandomSampler for class balancing (recommended over USE_CLASS_WEIGHTS)
+EMA_DECAY = 0.9999
+USE_COORD_ATTN = True  # ← Enable CA with fixed implementation
 
 # Fine-tuning configuration (set FREEZE_BACKBONE_EPOCHS=0 for initial training)
 FREEZE_BACKBONE_EPOCHS = 0  # Set to 3 when fine-tuning on AffectNet

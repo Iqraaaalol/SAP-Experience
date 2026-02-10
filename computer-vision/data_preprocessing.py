@@ -4,7 +4,7 @@ from typing import List, Tuple
 import torch
 import numpy as np
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 from collections import Counter
 
 import config
@@ -38,19 +38,18 @@ def get_transforms(dataset_type='fer', deployment_mode='demo'):
     )
     
     if dataset_type == 'fer':
-        # Heavy augmentation for robust base model
+        # Moderate augmentation for robust base model (optimized for facial emotion recognition)
+        # Removed: RandomPerspective, RandomAffine, RandomGrayscale, GaussianBlur
+        # These can distort facial features too heavily or remove important cues
         train_transforms = transforms.Compose([
             ConvertToRGB(),
-            transforms.RandomResizedCrop(config.INPUT_SIZE, scale=(0.7, 1.0)),
+            transforms.Resize(256),
+            transforms.RandomResizedCrop(config.INPUT_SIZE, scale=(0.85, 1.0)),  # Less aggressive cropping
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=15),
-            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-            transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.15, hue=0.05),
-            transforms.RandomGrayscale(p=0.1),
-            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5)),
+            transforms.RandomRotation(degrees=10),  # Reduced from 15
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),  # Removed saturation & hue
             transforms.ToTensor(),
-            transforms.RandomErasing(p=0.2, scale=(0.02, 0.15)),
+            transforms.RandomErasing(p=0.1, scale=(0.02, 0.1)),  # Lighter erasing
             normalize
         ])
     
@@ -116,7 +115,7 @@ def _split_indices(dataset_size: int, val_split: float) -> Tuple[List[int], List
 
 
 def get_data_loaders(data_dir=None, batch_size=config.BATCH_SIZE, num_workers=config.NUM_WORKERS, 
-                     dataset_type='fer', deployment_mode='demo'):
+                     dataset_type='fer', deployment_mode='demo', use_weighted_sampler=False):
     """Create DataLoaders for ImageFolder-based datasets.
     
     Args:
@@ -125,6 +124,8 @@ def get_data_loaders(data_dir=None, batch_size=config.BATCH_SIZE, num_workers=co
         num_workers: Number of worker processes for data loading.
         dataset_type: 'fer' or 'affectnet' - determines augmentation strategy.
         deployment_mode: 'demo' (classroom) or 'production' (airplane).
+        use_weighted_sampler: If True, use WeightedRandomSampler for class balancing.
+                             This is better than class weights in the loss function.
     """
     if data_dir is None:
         data_dir = config.DATA_DIR
@@ -154,11 +155,27 @@ def get_data_loaders(data_dir=None, batch_size=config.BATCH_SIZE, num_workers=co
     print(f"  Val samples:   {len(val_dataset)}")
     print(f"  Test samples:  {len(test_dataset)}")
     print(f"  Classes:       {class_names}")
+    print(f"  Weighted sampling: {use_weighted_sampler}")
+
+    # Create sampler for training data if requested
+    train_sampler = None
+    shuffle = True
+    
+    if use_weighted_sampler:
+        print("\nUsing WeightedRandomSampler for class balancing...")
+        sample_weights = compute_sample_weights(train_dataset)
+        train_sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(sample_weights),
+            replacement=True  # Allow oversampling of minority classes
+        )
+        shuffle = False  # Can't use shuffle with sampler
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=True
     )
@@ -223,6 +240,48 @@ def compute_class_weights(dataset, num_classes):
         print(f"  Class {i}: {class_counts[i]:5d} samples, weight: {weights[i]:.4f}")
     
     return weights
+
+
+def compute_sample_weights(dataset):
+    """
+    Compute per-sample weights for WeightedRandomSampler.
+    Each sample gets a weight based on its class's inverse frequency.
+    
+    Args:
+        dataset: PyTorch dataset (Subset of ImageFolder)
+    
+    Returns:
+        torch.Tensor: Weight for each sample in the dataset
+    """
+    # Extract targets from dataset
+    if hasattr(dataset, 'targets'):
+        targets = dataset.targets
+    elif hasattr(dataset, 'dataset') and hasattr(dataset.dataset, 'targets'):
+        # Handle Subset wrapper
+        targets = [dataset.dataset.targets[i] for i in dataset.indices]
+    else:
+        raise ValueError("Dataset must have 'targets' attribute or be a Subset of such dataset")
+    
+    # Count class frequencies
+    class_counts = Counter(targets)
+    num_classes = len(class_counts)
+    
+    # Compute weight for each class (inverse frequency)
+    class_weights = {}
+    total_samples = len(targets)
+    for class_idx, count in class_counts.items():
+        class_weights[class_idx] = total_samples / (num_classes * count)
+    
+    # Assign weight to each sample based on its class
+    sample_weights = torch.zeros(len(targets))
+    for idx, target in enumerate(targets):
+        sample_weights[idx] = class_weights[target]
+    
+    print("\nSample weights computed for WeightedRandomSampler:")
+    for class_idx in sorted(class_counts.keys()):
+        print(f"  Class {class_idx}: {class_counts[class_idx]:5d} samples, weight: {class_weights[class_idx]:.4f}")
+    
+    return sample_weights
 
 
 def mixup_data(x, y, alpha=0.2, device='cuda'):
