@@ -199,3 +199,4 @@ checkpoints/affectnet_standalone_best_convnext_base.pth
 checkpoints/raf-db_best_convnext_base.pth
 computer-vision/FER2013_MODEL_ARCHITECTURE.md
 fer_affectnet_confusion_matrix.png
+data/aircraft.db

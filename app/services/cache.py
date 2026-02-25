@@ -116,14 +116,31 @@ class ConversationHistory:
         if not history:
             return ""
         
-        formatted_lines = ["\n--- CONVERSATION HISTORY (use this to understand follow-up questions) ---"]
-        for msg in history:
-            role = "PASSENGER" if msg['role'] == 'user' else "YOUR PREVIOUS RESPONSE"
-            # Truncate long messages in history to save context
-            content = msg['content'][:500] + "..." if len(msg['content']) > 500 else msg['content']
-            formatted_lines.append(f"[{role}]: {content}")
-        formatted_lines.append("--- END OF CONVERSATION HISTORY ---")
-        formatted_lines.append("\nIMPORTANT: If the passenger's new message is a short reply like 'yes', 'no', 'sure', 'tell me more', etc., refer to YOUR PREVIOUS RESPONSE above to understand what they are responding to.\n")
+        formatted_lines = ["\n=== CONVERSATION HISTORY ==="]
+        formatted_lines.append("(Review this to understand context for follow-up questions)\n")
+        
+        turn_num = 1
+        for i in range(0, len(history), 2):
+            user_msg = history[i] if i < len(history) else None
+            assistant_msg = history[i+1] if i+1 < len(history) else None
+            
+            if user_msg:
+                content = user_msg['content'][:400] + "..." if len(user_msg['content']) > 400 else user_msg['content']
+                formatted_lines.append(f"Turn {turn_num} - Passenger: {content}")
+            if assistant_msg:
+                # Show more of the last response since that's what follow-ups refer to
+                max_len = 800 if i >= len(history) - 2 else 300
+                content = assistant_msg['content'][:max_len] + "..." if len(assistant_msg['content']) > max_len else assistant_msg['content']
+                formatted_lines.append(f"Turn {turn_num} - Avia: {content}")
+            turn_num += 1
+            formatted_lines.append("")  # Empty line between turns
+        
+        formatted_lines.append("=== END CONVERSATION HISTORY ===")
+        formatted_lines.append("")
+        formatted_lines.append("FOLLOW-UP HANDLING:")
+        formatted_lines.append("- If the new message is short (e.g., 'yes', 'no', 'sure', 'more', 'okay'), it's a response to your LAST message above.")
+        formatted_lines.append("- Continue naturally from where the conversation left off.")
+        formatted_lines.append("- Reference specific things you mentioned if the passenger agrees or asks for more.\n")
         
         return "\n".join(formatted_lines)
     
@@ -132,7 +149,5 @@ class ConversationHistory:
         self._cleanup_expired()
         return len(self.histories)
 
-
-# Singleton instances
 query_cache = QueryCache()
 conversation_history = ConversationHistory()

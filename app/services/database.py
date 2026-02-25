@@ -24,14 +24,13 @@ async def init_db():
             )
         """)
         
+        # Conversation history table: store individual messages with role and timestamp
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS comfortFeedback (
+            CREATE TABLE IF NOT EXISTS conversationHistory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 seatNumber TEXT NOT NULL,
-                temperature FLOAT,
-                lighting FLOAT,
-                noise_level FLOAT,
-                overall_comfort TEXT,
+                role TEXT NOT NULL, -- 'user' or 'assistant'
+                content TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -51,14 +50,10 @@ async def get_stats() -> dict:
         cursor = await db.execute("SELECT COUNT(*) FROM passengerQueries")
         total_queries = (await cursor.fetchone())[0]
         
-        cursor = await db.execute("SELECT COUNT(*) FROM comfortFeedback")
-        total_feedback = (await cursor.fetchone())[0]
-        
         await db.close()
-        
+
         return {
-            "total_queries": total_queries,
-            "total_feedback_submissions": total_feedback
+            "total_queries": total_queries
         }
     except Exception as e:
         return {"error": str(e)}
@@ -78,16 +73,17 @@ async def log_query(seat_number: str, destination: str, query_text: str, respons
         print(f"Error logging query: {e}")
 
 
-async def log_feedback(seat_number: str, temperature: float, lighting: float, 
-                       noise_level: float, overall_comfort: str):
-    """Log comfort feedback to the database."""
+async def log_conversation_message(seat_number: str, role: str, content: str):
+    """Persist a single conversation message (user or assistant) with timestamp."""
     try:
         db = await aiosqlite.connect(DB_FILE)
         await db.execute(
-            "INSERT INTO comfortFeedback (seatNumber, temperature, lighting, noise_level, overall_comfort) VALUES (?, ?, ?, ?, ?)",
-            (seat_number, temperature, lighting, noise_level, overall_comfort)
+            "INSERT INTO conversationHistory (seatNumber, role, content) VALUES (?, ?, ?)",
+            (seat_number, role, content)
         )
         await db.commit()
         await db.close()
     except Exception as e:
-        print(f"Error logging feedback: {e}")
+        print(f"Error logging conversation message: {e}")
+
+

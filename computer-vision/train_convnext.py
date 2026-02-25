@@ -16,7 +16,6 @@ from attention import CoordinateAttention
 EARLY_STOPPING_PATIENCE = 7
 GRAD_CLIP_MAX_NORM = 1.0
 
-
 class ModelEMA:
     """
     Exponential Moving Average (EMA) of model weights.

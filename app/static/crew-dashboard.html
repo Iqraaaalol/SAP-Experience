@@ -59,6 +59,7 @@
         .video-wrapper {
             position: relative;
             width: 100%;
+            min-height: 140px;
             background: #000;
             border-radius: 8px;
             overflow: hidden;
@@ -151,13 +152,36 @@
 
         // Video Feed Component
         function VideoFeed({ videoUrl = "/video_feed" }) {
-            const [isLoading, setIsLoading] = useState(true);
+            const [isLoading, setIsLoading] = useState(false);
             const [hasError, setHasError] = useState(false);
             const [seatData, setSeatData] = useState(null);
+            const [cvEnabled, setCvEnabled] = useState(false);
+            const [cvToggling, setCvToggling] = useState(false);
             const imgRef = useRef(null);
 
-            // Fetch seat calibration data
+            // Check CV status on mount
             useEffect(() => {
+                const checkCvStatus = async () => {
+                    try {
+                        const response = await fetch('/api/cv/status');
+                        if (response.ok) {
+                            const data = await response.json();
+                            setCvEnabled(data.enabled);
+                            if (data.enabled) setIsLoading(true);
+                        }
+                    } catch (error) {
+                        console.error('Failed to fetch CV status:', error);
+                    }
+                };
+                checkCvStatus();
+            }, []);
+
+            // Fetch seat calibration data (only when CV is enabled)
+            useEffect(() => {
+                if (!cvEnabled) {
+                    setSeatData(null);
+                    return;
+                }
                 const fetchSeatData = async () => {
                     try {
                         const response = await fetch('/api/seats');
@@ -174,7 +198,36 @@
                 fetchSeatData();
                 const interval = setInterval(fetchSeatData, 2000); // Refresh every 2s
                 return () => clearInterval(interval);
-            }, []);
+            }, [cvEnabled]);
+
+            const toggleCv = async () => {
+                setCvToggling(true);
+                try {
+                    if (cvEnabled) {
+                        const response = await fetch('/api/cv/stop', { method: 'POST' });
+                        if (response.ok) {
+                            setCvEnabled(false);
+                            setIsLoading(false);
+                            setHasError(false);
+                        }
+                    } else {
+                        const response = await fetch('/api/cv/start', { method: 'POST' });
+                        if (response.ok) {
+                            setCvEnabled(true);
+                            setIsLoading(true);
+                            setHasError(false);
+                        } else {
+                            const err = await response.json();
+                            alert('Failed to start CV: ' + (err.detail || 'Unknown error'));
+                        }
+                    }
+                } catch (error) {
+                    console.error('CV toggle failed:', error);
+                    alert('CV toggle failed: ' + error.message);
+                } finally {
+                    setCvToggling(false);
+                }
+            };
 
             const handleLoad = () => {
                 setIsLoading(false);
@@ -190,14 +243,36 @@
                 <div className="video-feed-container">
                     <div className="video-feed-header">
                         <div className="video-feed-title">📹 Live Passenger Monitor</div>
-                        <div className="video-status">
-                            <div className={`video-status-dot ${!isLoading && !hasError ? 'live' : ''}`}></div>
-                            <span>{!isLoading && !hasError ? 'LIVE' : hasError ? 'Disconnected' : 'Connecting...'}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            {cvEnabled && (
+                                <div className="video-status">
+                                    <div className={`video-status-dot ${!isLoading && !hasError ? 'live' : ''}`}></div>
+                                    <span>{!isLoading && !hasError ? 'LIVE' : hasError ? 'Disconnected' : 'Connecting...'}</span>
+                                </div>
+                            )}
+                            <button
+                                onClick={toggleCv}
+                                disabled={cvToggling}
+                                style={{
+                                    padding: '6px 16px',
+                                    borderRadius: '6px',
+                                    border: 'none',
+                                    cursor: cvToggling ? 'not-allowed' : 'pointer',
+                                    fontWeight: '600',
+                                    fontSize: '13px',
+                                    background: cvEnabled ? '#c0392b' : '#27ae60',
+                                    color: '#fff',
+                                    opacity: cvToggling ? 0.6 : 1,
+                                    transition: 'background 0.2s'
+                                }}
+                            >
+                                {cvToggling ? '...' : cvEnabled ? '⏹ Disable CV' : '▶ Enable CV'}
+                            </button>
                         </div>
                     </div>
                     
                     {/* Seat Grid Status */}
-                    {seatData && seatData.seats && Object.keys(seatData.seats).length > 0 && (
+                    {cvEnabled && seatData && seatData.seats && Object.keys(seatData.seats).length > 0 && (
                         <div style={{
                             background: 'rgba(0,0,0,0.3)',
                             padding: '12px',
@@ -243,13 +318,22 @@
                     )}
                     
                     <div className="video-wrapper">
-                        {isLoading && (
+                        {!cvEnabled && (
+                            <div className="video-overlay">
+                                <div style={{ fontSize: '48px', marginBottom: '10px' }}>📷</div>
+                                <div style={{ color: '#aaa', fontSize: '16px' }}>Computer vision is disabled</div>
+                                <div style={{ fontSize: '12px', marginTop: '8px', opacity: 0.6 }}>
+                                    Click "Enable CV" to start the camera feed
+                                </div>
+                            </div>
+                        )}
+                        {cvEnabled && isLoading && (
                             <div className="video-overlay">
                                 <div className="loading-spinner"></div>
                                 <div>Connecting to camera...</div>
                             </div>
                         )}
-                        {hasError && (
+                        {cvEnabled && hasError && (
                             <div className="video-overlay">
                                 <div style={{ fontSize: '48px', marginBottom: '10px' }}>📷</div>
                                 <div>Camera feed unavailable</div>
@@ -258,15 +342,17 @@
                                 </div>
                             </div>
                         )}
-                        <img
-                            ref={imgRef}
-                            src={videoUrl}
-                            alt="Live camera feed"
-                            className="video-stream"
-                            onLoad={handleLoad}
-                            onError={handleError}
-                            style={{ display: hasError ? 'none' : 'block' }}
-                        />
+                        {cvEnabled && (
+                            <img
+                                ref={imgRef}
+                                src={videoUrl}
+                                alt="Live camera feed"
+                                className="video-stream"
+                                onLoad={handleLoad}
+                                onError={handleError}
+                                style={{ display: hasError ? 'none' : 'block' }}
+                            />
+                        )}
                     </div>
                 </div>
             );
@@ -330,6 +416,119 @@
                         <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
                             {isConnected ? 'Live' : 'Reconnecting...'}
                         </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // System Status Component (shows ChromaDB, model, etc.)
+        function SystemStatus() {
+            const [stats, setStats] = useState(null);
+            const [health, setHealth] = useState(null);
+
+            useEffect(() => {
+                const fetchStatus = async () => {
+                    try {
+                        const [statsRes, healthRes] = await Promise.all([
+                            fetch('/api/stats'),
+                            fetch('/api/health')
+                        ]);
+                        if (statsRes.ok) setStats(await statsRes.json());
+                        if (healthRes.ok) setHealth(await healthRes.json());
+                    } catch (error) {
+                        console.error('Failed to fetch system status:', error);
+                    }
+                };
+                fetchStatus();
+                const interval = setInterval(fetchStatus, 10000); // Refresh every 10s
+                return () => clearInterval(interval);
+            }, []);
+
+            return (
+                <div style={{
+                    background: 'rgba(0,0,0,0.2)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginTop: '16px',
+                    fontSize: '12px'
+                }}>
+                    <div style={{ 
+                        fontWeight: 600, 
+                        marginBottom: '10px', 
+                        fontSize: '13px',
+                        color: 'var(--color-text-secondary)'
+                    }}>
+                        🖥️ SYSTEM STATUS
+                    </div>
+                    
+                    {/* ChromaDB Status */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        marginBottom: '6px'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>ChromaDB</span>
+                        <span style={{ 
+                            color: stats?.chroma_available ? '#22c55e' : '#ef4444',
+                            fontWeight: 500
+                        }}>
+                            {stats?.chroma_available ? '● Connected' : '○ Offline'}
+                        </span>
+                    </div>
+                    
+                    {/* LLM Model */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        marginBottom: '6px'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>LLM Model</span>
+                        <span style={{ color: '#a1a1aa' }}>
+                            {stats?.model || 'llama3.2:3b'}
+                        </span>
+                    </div>
+                    
+                    {/* Health Status */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        marginBottom: '6px'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>API Health</span>
+                        <span style={{ 
+                            color: health?.status === 'ok' ? '#22c55e' : '#ef4444',
+                            fontWeight: 500
+                        }}>
+                            {health?.status === 'ok' ? '● Healthy' : '○ Error'}
+                        </span>
+                    </div>
+                    
+                    {/* Cache Size */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center',
+                        marginBottom: '6px'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>Cache Size</span>
+                        <span style={{ color: '#a1a1aa' }}>
+                            {stats?.cache_size ?? 0} entries
+                        </span>
+                    </div>
+                    
+                    {/* Total Queries */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center'
+                    }}>
+                        <span style={{ color: 'var(--color-text-secondary)' }}>Total Queries</span>
+                        <span style={{ color: '#a1a1aa' }}>
+                            {stats?.total_queries ?? 0}
+                        </span>
                     </div>
                 </div>
             );
@@ -416,6 +615,8 @@
                             <span className="category-count">{1}</span>
                         </div>
                     </div>
+
+                    <SystemStatus />
                 </div>
             );
         }

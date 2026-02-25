@@ -12,15 +12,6 @@ class QueryRequest(BaseModel):
     language: str = "en"
 
 
-class FeedbackRequest(BaseModel):
-    """Request model for comfort feedback."""
-    seatNumber: str
-    temperature: float
-    lighting: float
-    noise_level: float
-    overall_comfort: str
-
-
 class CrewAlertRequest(BaseModel):
     """Request model for crew alerts."""
     seatNumber: str

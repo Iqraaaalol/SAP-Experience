@@ -22,7 +22,7 @@ except ImportError:
     print("Warning: mediapipe not installed. Sleep detection will be disabled.")
     print("Install with: pip install mediapipe")
 
-# Model download URL
+# FaceMesh landmark indices for sleep detection
 FACE_LANDMARKER_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 FACE_LANDMARKER_MODEL_PATH = os.path.join(os.path.dirname(__file__), "face_landmarker.task")
 
@@ -205,6 +205,90 @@ class SleepDetector:
     def reset_all(self):
         """Clear all tracking state."""
         self._eyes_closed_since.clear()
+
+    def detect_faces_in_frame(self, frame_bgr, max_faces=4):
+        """
+        Detect all faces in a full frame using MediaPipe FaceLandmarker.
+
+        Returns output compatible with MTCNN's detect(..., landmarks=True):
+            boxes     - ndarray (N, 4)  [x1, y1, x2, y2] in pixel coords
+            probs     - ndarray (N,)    detection confidence (1.0 placeholder)
+            landmarks - ndarray (N, 5, 2) ordered as:
+                          [left_eye_center, right_eye_center,
+                           nose_tip, left_mouth_corner, right_mouth_corner]
+                        where left/right are from the VIEWER's perspective
+                        (matching MTCNN's coordinate convention).
+
+        All three are None when no faces are detected or MediaPipe is unavailable.
+
+        MediaPipe landmark indices used:
+            Eye contours (viewer's left  = subject's right): RIGHT_EYE_INDICES
+            Eye contours (viewer's right = subject's left):  LEFT_EYE_INDICES
+            Nose tip:   4
+            Mouth left  (viewer's left):  291
+            Mouth right (viewer's right):  61
+        """
+        if not self.available or frame_bgr is None or frame_bgr.size == 0:
+            return None, None, None
+
+        import cv2
+        from mediapipe import Image, ImageFormat
+
+        # Lazily create / cache a multi-face landmarker
+        if (not hasattr(self, '_multi_face_landmarker')
+                or getattr(self, '_multi_face_max', 0) != max_faces):
+            base_options = mp_python.BaseOptions(model_asset_path=FACE_LANDMARKER_MODEL_PATH)
+            options = vision.FaceLandmarkerOptions(
+                base_options=base_options,
+                num_faces=max_faces,
+                min_face_detection_confidence=0.5,
+                output_face_blendshapes=False,
+                output_facial_transformation_matrixes=False,
+            )
+            self._multi_face_landmarker = vision.FaceLandmarker.create_from_options(options)
+            self._multi_face_max = max_faces
+
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        mp_image = Image(image_format=ImageFormat.SRGB, data=rgb)
+        results = self._multi_face_landmarker.detect(mp_image)
+
+        if not results.face_landmarks:
+            return None, None, None
+
+        h, w = frame_bgr.shape[:2]
+        boxes, probs, landmarks_out = [], [], []
+
+        for face_lms in results.face_landmarks:
+            xs = [lm.x * w for lm in face_lms]
+            ys = [lm.y * h for lm in face_lms]
+            x1 = max(0, int(min(xs)))
+            y1 = max(0, int(min(ys)))
+            x2 = min(w, int(max(xs)))
+            y2 = min(h, int(max(ys)))
+            boxes.append([x1, y1, x2, y2])
+            probs.append(1.0)
+
+            def _avg(indices):
+                pts = np.array([[face_lms[i].x * w, face_lms[i].y * h]
+                                for i in indices])
+                return pts.mean(axis=0)
+
+            # Viewer's left eye  = subject's right eye = RIGHT_EYE_INDICES
+            # Viewer's right eye = subject's left eye  = LEFT_EYE_INDICES
+            left_eye_center  = _avg(RIGHT_EYE_INDICES)
+            right_eye_center = _avg(LEFT_EYE_INDICES)
+            nose_tip         = np.array([face_lms[4].x * w,   face_lms[4].y * h])
+            mouth_left       = np.array([face_lms[291].x * w, face_lms[291].y * h])
+            mouth_right      = np.array([face_lms[61].x * w,  face_lms[61].y * h])
+
+            landmarks_out.append([left_eye_center, right_eye_center,
+                                   nose_tip, mouth_left, mouth_right])
+
+        return (
+            np.array(boxes,        dtype=np.float32),
+            np.array(probs,        dtype=np.float32),
+            np.array(landmarks_out, dtype=np.float32),
+        )
 
     def get_ear_state(self, seat_id):
         """

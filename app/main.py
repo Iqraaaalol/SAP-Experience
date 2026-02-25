@@ -34,7 +34,7 @@ from services import (
     # Config
     STATIC_DIR, MODEL_NAME, CHROMA_PERSIST_DIR,
     # Models
-    QueryRequest, FeedbackRequest,
+    QueryRequest, CrewAlertRequest,
     # Language
     get_language_name, get_service_message, translate_to_english,
     # Services
@@ -92,10 +92,10 @@ class CVStreamProcessor:
                 print(f"✅ Seat manager loaded with {len(self.seat_manager.seats)} seats")
             else:
                 print(f"⚠️  Failed to load calibration, using default grid")
-                self.seat_manager._generate_grid_zones()
+                self.seat_manager._create_grid_zones()
         else:
             print(f"⚠️  No calibration found at {calibration_path}, using default grid")
-            self.seat_manager._generate_grid_zones()
+            self.seat_manager._create_grid_zones()
         
         # Get actual dimensions
         self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -115,10 +115,10 @@ class CVStreamProcessor:
                 print(f"✅ Seat manager loaded with {len(self.seat_manager.seats)} seats")
             else:
                 print(f"⚠️  Failed to load calibration, using default grid")
-                self.seat_manager._generate_grid_zones()
+                self.seat_manager._create_grid_zones()
         else:
             print(f"⚠️  No calibration found at {calibration_path}, using default grid")
-            self.seat_manager._generate_grid_zones()
+            self.seat_manager._create_grid_zones()
         
         self.emotion_update_interval = 0.3
         self.last_emotion_update = time.time()
@@ -319,13 +319,8 @@ async def lifespan(app: FastAPI):
     # Create static directory if it doesn't exist
     os.makedirs(STATIC_DIR, exist_ok=True)
     
-    # Initialize CV Stream Processor
-    try:
-        camera = CVStreamProcessor(camera_index=0)
-        camera.start()
-    except Exception as e:
-        print(f"⚠️  CV Stream failed to start: {e}")
-        camera = None
+    # CV Stream Processor is NOT started on startup.
+    # Enable it from the Crew Dashboard via POST /api/cv/start
     
     # Print network access info
     hostname = socket.gethostname()
@@ -343,8 +338,7 @@ async def lifespan(app: FastAPI):
     print(f"📍 Local Access:    http://localhost:8000")
     print(f"🌐 Network Access:  http://{local_ip}:8000")
     print(f"📁 Static Files:    {STATIC_DIR}")
-    if camera:
-        print(f"📹 Video Stream:    http://localhost:8000/video_feed")
+    print(f"📷 Computer Vision: disabled at startup (enable from Crew Dashboard)")
     print(f"{'='*60}\n")
     
     yield
@@ -530,15 +524,6 @@ PASSENGER MESSAGE:
     }
 
 
-@app.post("/api/feedback")
-async def submit_feedback(request: FeedbackRequest):
-    """Receive comfort feedback."""
-    return {
-        "status": "success",
-        "message": "Feedback received (not logged)",
-        "seatNumber": request.seatNumber
-    }
-
 
 @app.post("/api/crew-request")
 async def crew_request(request: QueryRequest):
@@ -682,6 +667,48 @@ async def get_seat_status():
 #=============================================================================
 # ROUTES - CV Video Stream
 # =============================================================================
+
+@app.post("/api/cv/start")
+async def start_cv():
+    """Start the CV stream processor (called from Crew Dashboard)."""
+    global camera
+    if camera is not None and camera.running:
+        return {"status": "already_running", "message": "CV stream is already active"}
+    try:
+        camera = CVStreamProcessor(camera_index=0)
+        camera.start()
+        print("📹 CV Stream started from Crew Dashboard")
+        return {"status": "started", "message": "CV stream started"}
+    except Exception as e:
+        camera = None
+        print(f"⚠️  CV Stream failed to start: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start CV stream: {e}")
+
+
+@app.post("/api/cv/stop")
+async def stop_cv():
+    """Stop the CV stream processor (called from Crew Dashboard)."""
+    global camera
+    if camera is None:
+        return {"status": "not_running", "message": "CV stream is not active"}
+    try:
+        camera.stop()
+        camera = None
+        print("📹 CV Stream stopped from Crew Dashboard")
+        return {"status": "stopped", "message": "CV stream stopped"}
+    except Exception as e:
+        print(f"⚠️  Error stopping CV stream: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop CV stream: {e}")
+
+
+@app.get("/api/cv/status")
+async def cv_status():
+    """Get current CV stream status."""
+    return {
+        "enabled": camera is not None and camera.running,
+        "message": "CV stream active" if (camera is not None and camera.running) else "CV stream inactive"
+    }
+
 
 @app.get("/video_feed")
 async def video_feed():

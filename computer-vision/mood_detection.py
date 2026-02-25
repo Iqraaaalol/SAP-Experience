@@ -1,6 +1,5 @@
 import cv2
 import torch
-from facenet_pytorch import MTCNN
 from torchvision import transforms, models
 import torch.nn as nn
 from PIL import Image
@@ -115,7 +114,10 @@ class ConvNeXtEmotionDetector:
         
         Args:
             image: BGR image (numpy array)
-            landmarks: 5 facial landmarks [left_eye, right_eye, nose, left_mouth, right_mouth]
+            landmarks: 5 facial landmarks [left_eye_center, right_eye_center,
+                       nose_tip, left_mouth_corner, right_mouth_corner]
+                       as returned by SleepDetector.detect_faces_in_frame
+                       (viewer's perspective, pixel coordinates relative to the crop).
         
         Returns:
             Aligned face image (numpy array)
@@ -123,7 +125,7 @@ class ConvNeXtEmotionDetector:
         if landmarks is None or len(landmarks) < 2:
             return image
             
-        # Extract eye coordinates (MTCNN order: left_eye, right_eye, nose, left_mouth, right_mouth)
+        # Extract eye coordinates (viewer's perspective: [0]=image-left, [1]=image-right)
         left_eye = landmarks[0]
         right_eye = landmarks[1]
         
@@ -265,21 +267,14 @@ class FaceDetector:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {device}")
         
-        self.mtcnn = MTCNN(
-            keep_all=True,
-            device=device,
-            min_face_size=40,
-            post_process=False  
-        )
-        
         self.emotion_detector = ConvNeXtEmotionDetector()
-        
-        # Initialize sleep detector
+
+        # detect_faces_in_frame uses MediaPipe FaceLandmarker (468 landmarks)
         self.sleep_detector = SleepDetector()
         if self.sleep_detector.available:
-            print("Sleep detection enabled (MediaPipe EAR)")
+            print("Face detection + sleep detection enabled (MediaPipe FaceLandmarker)")
         else:
-            print("Sleep detection disabled (mediapipe not installed)")
+            print("MediaPipe unavailable — face detection and sleep detection disabled")
         
         # Seat-based tracking may be disabled; store flag and init only when enabled
         self.use_seats = use_seats
@@ -294,10 +289,13 @@ class FaceDetector:
         self.last_emotion_time = {}
     
     def detect_faces(self, frame):
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        boxes, probs, landmarks = self.mtcnn.detect(rgb_frame, landmarks=True)
-        
+        # MediaPipe FaceLandmarker handles BGR->RGB conversion internally.
+        # Returns (boxes, probs, landmarks) in the same shape as MTCNN did:
+        #   boxes:     ndarray (N, 4)    [x1, y1, x2, y2]
+        #   probs:     ndarray (N,)      confidence (1.0 placeholder)
+        #   landmarks: ndarray (N, 5, 2) [left_eye, right_eye, nose,
+        #                                 left_mouth, right_mouth] viewer-perspective
+        boxes, probs, landmarks = self.sleep_detector.detect_faces_in_frame(frame)
         return boxes, probs, landmarks
     
     def estimate_distance(self, box):
