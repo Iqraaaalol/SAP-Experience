@@ -195,3 +195,7 @@ knowledge_base/wikivoyage.xml
 knowledge_base/wikivoyage.xml.bz2
 checkpoints/affectnet_best_convnext_base.pth
 computer-vision/test.py
+checkpoints/affectnet_standalone_best_convnext_base.pth
+checkpoints/raf-db_best_convnext_base.pth
+computer-vision/FER2013_MODEL_ARCHITECTURE.md
+fer_affectnet_confusion_matrix.png
