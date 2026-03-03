@@ -70,6 +70,14 @@ EAR_THRESHOLD = 0.15        # Below this Eye Aspect Ratio, eyes are considered c
 SLEEP_DURATION = 3.0        # Seconds of sustained eye closure to trigger sleeping state
 SLEEP_EMOTION_COLOR = (128, 128, 128)  # Gray color for sleeping overlay (BGR)
 
+# MQTT Configuration (for sending seat emotions to Arduino)
+MQTT_ENABLED = True
+MQTT_BROKER_HOST = "10.110.0.13"  # Change to broker IP if running on another machine
+MQTT_BROKER_PORT = 1883
+MQTT_TOPIC = "sap/seats/emotion"  # Topic format: sap/seats/emotion/{seat_id}
+MQTT_CLIENT_ID = "sap-emotion-detector"
+MQTT_PUBLISH_INTERVAL = 1.0  # Seconds between MQTT publishes (avoid flooding)
+
 # Optional: resume training from a specific checkpoint path. Set to a file path to enable.
 # Example: RESUME_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, 'resume.pth')
 RESUME_CHECKPOINT_PATH = False
