@@ -736,3 +736,111 @@ body {
 
     .system-status { margin-top: 0; }
 }
+
+/* ── Cabin Lighting Control ────────────────────────────────────── */
+
+.lighting-control {
+    padding: 0 0 8px;
+}
+
+.lighting-mode-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.mode-btn {
+    flex: 1;
+    padding: 6px 0;
+    border: 1px solid rgba(255, 255, 255, .15);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, .06);
+    color: #9ca3af;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: .5px;
+    transition: background .18s, color .18s, border-color .18s;
+    font-family: inherit;
+}
+
+.mode-btn:hover {
+    background: rgba(255, 255, 255, .12);
+    color: #e5e7eb;
+}
+
+.mode-btn.mode-active {
+    background: rgba(99, 102, 241, .25);
+    color: #a5b4fc;
+    border-color: rgba(99, 102, 241, .55);
+}
+
+.mode-btn.mode-active.mode-manual {
+    background: rgba(245, 158, 11, .2);
+    color: #fcd34d;
+    border-color: rgba(245, 158, 11, .45);
+}
+
+.scene-picker {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+    margin-bottom: 10px;
+}
+
+.scene-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, .1);
+    background: rgba(255, 255, 255, .05);
+    color: #d1d5db;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+    font-family: inherit;
+}
+
+.scene-btn:hover {
+    background: rgba(255, 255, 255, .1);
+}
+
+.scene-btn.scene-active {
+    border-color: var(--scene-color);
+    background: color-mix(in srgb, var(--scene-color) 18%, transparent);
+    color: #fff;
+}
+
+.scene-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 6px var(--scene-color, #888);
+}
+
+.lighting-status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    margin-top: 4px;
+}
+
+.lighting-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: rgba(245, 158, 11, .2);
+    color: #fcd34d;
+    border: 1px solid rgba(245, 158, 11, .4);
+}
+
+.lighting-badge.auto {
+    background: rgba(99, 102, 241, .18);
+    color: #a5b4fc;
+    border-color: rgba(99, 102, 241, .35);
+}

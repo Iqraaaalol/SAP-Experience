@@ -97,6 +97,48 @@
                     </template>
                     <div v-else class="sys-loading">Loading</div>
                 </div>
+
+                <!-- Cabin Lighting -->
+                <div class="system-status">
+                    <div class="section-label" style="margin-bottom:10px">
+                        CABIN LIGHTING
+                        <span :class="['lighting-badge', lightingOverride ? '' : 'auto']"
+                              style="margin-left:6px; vertical-align:middle">
+                            {{ lightingOverride ? 'MANUAL' : 'AUTO' }}
+                        </span>
+                    </div>
+                    <div class="lighting-control">
+                        <div class="lighting-mode-row">
+                            <button :class="['mode-btn', !lightingOverride ? 'mode-active' : '']"
+                                    @click="setLightingMode(false)">
+                                AUTO
+                            </button>
+                            <button :class="['mode-btn', lightingOverride ? 'mode-active mode-manual' : '']"
+                                    @click="setLightingMode(true)">
+                                MANUAL
+                            </button>
+                        </div>
+                        <div v-if="lightingOverride" class="scene-picker">
+                            <button
+                                v-for="s in lightingScenes"
+                                :key="s.key"
+                                :class="['scene-btn', lightingScene === s.key ? 'scene-active' : '']"
+                                :style="{ '--scene-color': s.color }"
+                                @click="selectLightingScene(s.key)"
+                            >
+                                <span class="scene-swatch" :style="{ background: s.color }"></span>
+                                {{ s.label }}
+                            </button>
+                        </div>
+                        <div class="lighting-status-row">
+                            <span class="sys-label">Active Scene</span>
+                            <span class="sys-value" :style="{ color: currentSceneColor }" style="font-weight:600">
+                                {{ lightingScene }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
             </aside>
 
             <!-- MAIN PANEL -->
@@ -272,6 +314,18 @@
                 const systemStats  = ref(null);
                 const systemHealth = ref(null);
 
+                // Lighting override
+                const lightingOverride = ref(false);
+                const lightingScene    = ref('NEUTRAL');
+                const lightingScenes = [
+                    { key: 'HAPPY',    label: 'Happy',    color: '#1EC8FF' },
+                    { key: 'NEUTRAL',  label: 'Neutral',  color: '#8080A0' },
+                    { key: 'STRESSED', label: 'Stressed', color: '#1E14C8' },
+                    { key: 'ANGRY',    label: 'Angry',    color: '#FF1E55' },
+                    { key: 'SAD',      label: 'Sad',      color: '#283296' },
+                    { key: 'ANXIOUS',  label: 'Anxious',  color: '#3C0AB4' },
+                ];
+
                 // Internal timers / WS
                 let wsRef                = null;
                 let reconnectTimeout     = null;
@@ -339,6 +393,10 @@
                 };
 
                 const capitalizeFirst = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+
+                const currentSceneColor = computed(() =>
+                    lightingScenes.find(s => s.key === lightingScene.value)?.color || '#808080'
+                );
 
                 const formatTime = (ts) => {
                     if (!ts) return '';
@@ -422,6 +480,52 @@
                     }
                 };
 
+                //  Lighting Override 
+                const fetchLightingOverride = async () => {
+                    try {
+                        const res = await fetch('/api/lighting/override');
+                        if (res.ok) {
+                            const d = await res.json();
+                            lightingOverride.value = d.enabled;
+                            lightingScene.value    = d.scene;
+                        }
+                    } catch (e) { /* ignore */ }
+                };
+
+                const setLightingMode = async (manual) => {
+                    try {
+                        const res = await fetch('/api/lighting/override', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ enabled: manual, scene: lightingScene.value })
+                        });
+                        if (res.ok) {
+                            const d = await res.json();
+                            lightingOverride.value = d.enabled;
+                            lightingScene.value    = d.scene;
+                            showToast(
+                                manual ? 'Manual lighting control active' : 'Auto mood detection resumed',
+                                'success', manual ? '' : ''
+                            );
+                        }
+                    } catch (e) { showToast('Lighting control failed', 'error', ''); }
+                };
+
+                const selectLightingScene = async (scene) => {
+                    try {
+                        const res = await fetch('/api/lighting/override', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ enabled: true, scene })
+                        });
+                        if (res.ok) {
+                            const d = await res.json();
+                            lightingScene.value = d.scene;
+                            showToast(`Scene → ${scene}`, 'success', '');
+                        }
+                    } catch (e) { showToast('Failed to set scene', 'error', ''); }
+                };
+
                 //  CV Controls 
                 const fetchSeatData = async () => {
                     try {
@@ -496,6 +600,9 @@
 
                     fetchSystemStatus();
                     systemStatusInterval = setInterval(fetchSystemStatus, 10000);
+
+                    // Sync lighting override state from server
+                    fetchLightingOverride();
                 });
 
                 onUnmounted(() => {
@@ -510,10 +617,12 @@
                     isConnected, toast,
                     cvEnabled, cvToggling, cvLoading, cvError, seatData,
                     systemStats, systemHealth,
+                    lightingOverride, lightingScene, lightingScenes, currentSceneColor,
                     categories, filters,
                     stats, filteredAlerts,
                     toggleCv, acknowledgeAlert,
                     getServiceIcon, capitalizeFirst, formatTime,
+                    setLightingMode, selectLightingScene,
                 };
             }
         }).mount('#app');

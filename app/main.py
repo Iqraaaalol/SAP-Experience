@@ -59,6 +59,39 @@ camera = None
 current_frame = None
 frame_lock = threading.Lock()
 
+# =============================================================================
+# LIGHTING OVERRIDE STATE
+# =============================================================================
+
+# In-memory override state — mirrors what has been sent to the Arduino
+_lighting_override: dict = {"enabled": False, "scene": "NEUTRAL"}
+
+_VALID_SCENES = {"HAPPY", "NEUTRAL", "STRESSED", "ANGRY", "SAD", "ANXIOUS"}
+
+
+def _publish_lighting_override(enabled: bool, scene: str) -> None:
+    """Publish a lighting override command to the Arduino via MQTT."""
+    import json
+    try:
+        import paho.mqtt.client as paho_mqtt
+    except ImportError:
+        print("[MQTT] paho-mqtt not installed — override not published to Arduino")
+        return
+
+    broker = os.environ.get("MQTT_BROKER_HOST", "10.110.0.13")
+    port   = int(os.environ.get("MQTT_BROKER_PORT", 1883))
+    topic  = "sap/lighting/override"
+    payload = json.dumps({"enabled": enabled, "scene": scene})
+
+    try:
+        client = paho_mqtt.Client(client_id="sap-crew-override")
+        client.connect(broker, port, keepalive=5)
+        client.publish(topic, payload, qos=1)
+        client.disconnect()
+        print(f"[MQTT] Lighting override published → {payload}")
+    except Exception as exc:
+        print(f"[MQTT] Lighting override publish failed: {exc}")
+
 class CVStreamProcessor:
     def __init__(self, camera_index=0):
         # Import CV modules
@@ -708,6 +741,32 @@ async def cv_status():
         "enabled": camera is not None and camera.running,
         "message": "CV stream active" if (camera is not None and camera.running) else "CV stream inactive"
     }
+
+
+# =============================================================================
+# ROUTES - Lighting Override
+# =============================================================================
+
+@app.get("/api/lighting/override")
+async def get_lighting_override():
+    """Return the current lighting override state."""
+    return _lighting_override
+
+
+@app.post("/api/lighting/override")
+async def set_lighting_override(payload: dict):
+    """Set the lighting override state and publish to MQTT.
+
+    Body: {"enabled": bool, "scene": "HAPPY" | "NEUTRAL" | "STRESSED" | "ANGRY" | "SAD" | "ANXIOUS"}
+    """
+    global _lighting_override
+    enabled = bool(payload.get("enabled", False))
+    scene   = str(payload.get("scene", "NEUTRAL")).upper()
+    if scene not in _VALID_SCENES:
+        raise HTTPException(status_code=400, detail=f"Invalid scene '{scene}'. Valid: {sorted(_VALID_SCENES)}")
+    _lighting_override = {"enabled": enabled, "scene": scene}
+    _publish_lighting_override(enabled, scene)
+    return _lighting_override
 
 
 @app.get("/video_feed")
