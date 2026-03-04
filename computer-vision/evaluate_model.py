@@ -94,13 +94,32 @@ def evaluate_model():
     
     # Confusion Matrix
     cm = confusion_matrix(all_labels, all_preds)
+
+    # Overall accuracy (as percentage) with 2 decimal places
+    total = cm.sum()
+    overall_acc = (np.trace(cm) / total) * 100 if total > 0 else 0.0
+    print(f"Overall accuracy: {overall_acc:.2f}%")
+
+    # Per-row (actual class) percentages for annotation, avoid div-by-zero
+    row_sums = cm.sum(axis=1, keepdims=True)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cm_percent = np.divide(cm, row_sums, where=row_sums != 0) * 100
+        cm_percent = np.nan_to_num(cm_percent)
+
+    # Create annotations combining count and percentage (2 decimal places)
+    annot = np.empty(cm.shape, dtype=object)
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            annot[i, j] = f"{cm[i, j]}\n({cm_percent[i, j]:.2f}%)"
+
     plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+    sns.heatmap(cm, annot=annot, fmt='', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
     plt.ylabel('Actual')
     plt.xlabel('Predicted')
-    plt.title('Confusion Matrix')
-    
-    save_path = "confusion_matrix.png"
+    plt.title('Confusion Matrix (counts and per-class % with 2 decimals)')
+
+    save_path = "fer_affectnet_confusion_matrix.png"
+    plt.tight_layout()
     plt.savefig(save_path)
     print(f"Confusion matrix saved to {save_path}")
 

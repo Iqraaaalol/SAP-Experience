@@ -5,6 +5,7 @@ import torch.nn as nn
 from PIL import Image
 import os
 import time
+import json
 import numpy as np
 import argparse
 from collections import deque
@@ -26,6 +27,173 @@ from seat_manager import SeatManager, SeatState, SeatCalibrator, CALIBRATION_FIL
 # Import sleep detector
 from sleep_detector import SleepDetector
 from attention import CoordinateAttention
+
+# MQTT publisher for sending seat emotions to Arduino
+try:
+    import paho.mqtt.client as mqtt
+    import paho.mqtt
+    MQTT_AVAILABLE = True
+    print(f"[MQTT] paho-mqtt version: {paho.mqtt.__version__}")
+except ImportError:
+    MQTT_AVAILABLE = False
+    print("Warning: paho-mqtt not installed. MQTT publishing disabled.")
+    print("Install with: pip install paho-mqtt")
+
+
+_MQTT_RC_CODES = {
+    0: "Connection accepted",
+    1: "Refused — unacceptable protocol version",
+    2: "Refused — identifier rejected",
+    3: "Refused — server unavailable",
+    4: "Refused — bad username or password",
+    5: "Refused — not authorised",
+}
+
+
+def _mqtt_socket_probe(host: str, port: int, timeout: float = 3.0) -> str:
+    """Try a raw TCP connect and return a human-readable status string."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            local = s.getsockname()
+            return f"OK — TCP socket open from {local[0]}:{local[1]} → {host}:{port}"
+    except socket.timeout:
+        return f"TIMEOUT — no response from {host}:{port} within {timeout}s (firewall drop?)"
+    except ConnectionRefusedError as e:
+        return (
+            f"REFUSED — {e}\n"
+            f"  → Mosquitto is likely bound to 'localhost' only.\n"
+            f"  → Edit mosquitto.conf and add:\n"
+            f"        listener 1883 0.0.0.0\n"
+            f"        allow_anonymous true\n"
+            f"  → Then restart the Mosquitto service."
+        )
+    except OSError as e:
+        return f"OS ERROR — {e}"
+
+
+class MQTTPublisher:
+    """Publishes seat emotion data to an MQTT broker (e.g. Mosquitto)."""
+
+    def __init__(self, broker_host=None, broker_port=None, topic=None,
+                 client_id=None, publish_interval=None):
+        self.broker_host = broker_host or getattr(config, 'MQTT_BROKER_HOST', '10.110.0.13')
+        self.broker_port = broker_port or getattr(config, 'MQTT_BROKER_PORT', 1883)
+        self.base_topic = topic or getattr(config, 'MQTT_TOPIC', 'sap/seats/emotion')
+        self.client_id = client_id or getattr(config, 'MQTT_CLIENT_ID', 'sap-emotion-detector')
+        self.publish_interval = publish_interval or getattr(config, 'MQTT_PUBLISH_INTERVAL', 1.0)
+        self.last_publish_time = 0.0
+        self.connected = False          # kept for logging; use client.is_connected() for gating
+        self._last_reconnect_attempt = 0.0
+        self._reconnect_cooldown = 5.0   # seconds between reconnect attempts
+
+        if not MQTT_AVAILABLE:
+            print("[MQTT] Publisher disabled (paho-mqtt not installed)")
+            return
+
+        print(f"[MQTT] ── Diagnostics ──────────────────────────────────────")
+        print(f"[MQTT] Broker target : {self.broker_host}:{self.broker_port}")
+        print(f"[MQTT] Client ID     : {self.client_id}")
+        print(f"[MQTT] Base topic    : {self.base_topic}")
+        print(f"[MQTT] TCP probe     : {_mqtt_socket_probe(self.broker_host, self.broker_port)}")
+        print(f"[MQTT] ────────────────────────────────────────────────────")
+
+        self.client = mqtt.Client(client_id=self.client_id,
+                                  callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+        self.client.on_connect = self._on_connect
+        self.client.on_disconnect = self._on_disconnect
+        self.client.on_log = self._on_log  # verbose paho-level logging
+
+        try:
+            self.client.connect(self.broker_host, self.broker_port, keepalive=60)
+            self.client.loop_start()  # Non-blocking background network loop
+            print(f"[MQTT] Async connect initiated → {self.broker_host}:{self.broker_port}")
+        except Exception as e:
+            print(f"[MQTT] connect() raised: {type(e).__name__}: {e}")
+            self.connected = False
+
+    def _on_connect(self, client, userdata, flags, rc, properties=None):
+        rc_int = rc.value if hasattr(rc, 'value') else (int(rc) if not isinstance(rc, int) else rc)
+        meaning = _MQTT_RC_CODES.get(rc_int, f"unknown rc={rc}")
+        if rc_int == 0:
+            self.connected = True
+            print(f"[MQTT] ✓ Connected to {self.broker_host}:{self.broker_port} — {meaning}")
+        else:
+            print(f"[MQTT] ✗ Connection failed (rc={rc_int}): {meaning}")
+
+    def _on_disconnect(self, client, userdata, flags, rc, properties=None):
+        self.connected = False
+        rc_int = rc.value if hasattr(rc, 'value') else (int(rc) if not isinstance(rc, int) else rc)
+        meaning = _MQTT_RC_CODES.get(rc_int, f"rc={rc}")
+        if rc_int != 0:
+            print(f"[MQTT] Unexpected disconnect — {meaning}. Will auto-reconnect.")
+        else:
+            print(f"[MQTT] Disconnected cleanly.")
+
+    def _on_log(self, client, userdata, level, buf):
+        # Only print MQTT_LOG_ERR and MQTT_LOG_WARNING to avoid noise
+        if level in (mqtt.MQTT_LOG_ERR, mqtt.MQTT_LOG_WARNING):
+            label = "ERR " if level == mqtt.MQTT_LOG_ERR else "WARN"
+            print(f"[MQTT][{label}] {buf}")
+
+    def _is_connected(self) -> bool:
+        """Use paho's own internal state — never stale."""
+        try:
+            return self.client.is_connected()
+        except Exception:
+            return False
+
+    def _try_reconnect(self, current_time: float):
+        """Attempt a reconnect if the cooldown has elapsed."""
+        if (current_time - self._last_reconnect_attempt) < self._reconnect_cooldown:
+            return
+        self._last_reconnect_attempt = current_time
+        probe = _mqtt_socket_probe(self.broker_host, self.broker_port)
+        print(f"[MQTT] Reconnecting… TCP probe: {probe}")
+        try:
+            self.client.reconnect()
+            print(f"[MQTT] reconnect() called — waiting for CONNACK")
+        except Exception as e:
+            print(f"[MQTT] reconnect() failed: {type(e).__name__}: {e}")
+
+    def publish_emotions(self, seat_emotions: dict, current_time: float):
+        """
+        Publish current seat emotions if enough time has elapsed.
+
+        Args:
+            seat_emotions: Dict[seat_id, (emotion, confidence)]
+            current_time: Current timestamp
+        """
+        if not MQTT_AVAILABLE:
+            return
+        if not self._is_connected():
+            self._try_reconnect(current_time)
+            return
+        if (current_time - self.last_publish_time) < self.publish_interval:
+            return
+
+        for seat_id, (emotion, confidence) in seat_emotions.items():
+            payload = json.dumps({
+                "seat": seat_id,
+                "emotion": emotion,
+                "confidence": round(confidence, 3)
+            })
+            topic = f"{self.base_topic}/{seat_id}"
+            self.client.publish(topic, payload, qos=0)
+
+        # Also publish a combined summary on the base topic
+        summary = {seat_id: {"emotion": emo, "confidence": round(conf, 3)}
+                   for seat_id, (emo, conf) in seat_emotions.items()}
+        self.client.publish(self.base_topic, json.dumps(summary), qos=0)
+
+        self.last_publish_time = current_time
+
+    def stop(self):
+        """Cleanly disconnect from the broker."""
+        if MQTT_AVAILABLE and hasattr(self, 'client'):
+            self.client.loop_stop()
+            self.client.disconnect()
+            print("[MQTT] Disconnected.")
 
 
 def run_calibration(video_source, width, height, num_seats):
@@ -452,6 +620,9 @@ def main():
     parser.add_argument('--calibrate', action='store_true', help='Run seat calibration before starting')
     parser.add_argument('--seats', type=int, default=4, help='Number of seats to calibrate')
     parser.add_argument('--no-seats', action='store_true', help='Disable seat-based tracking (just detect faces)')
+    parser.add_argument('--no-mqtt', action='store_true', help='Disable MQTT publishing')
+    parser.add_argument('--mqtt-host', type=str, default=None, help='MQTT broker hostname/IP (default: localhost)')
+    parser.add_argument('--mqtt-port', type=int, default=None, help='MQTT broker port (default: 1883)')
     args = parser.parse_args()
 
     if args.video.isdigit():
@@ -484,6 +655,13 @@ def main():
     # Initialize detector with actual frame size
     use_seats = not args.no_seats
     detector = FaceDetector(frame_width=actual_width, frame_height=actual_height, use_seats=use_seats)
+    
+    # Initialize MQTT publisher
+    mqtt_enabled = (not args.no_mqtt) and getattr(config, 'MQTT_ENABLED', True)
+    mqtt_publisher = MQTTPublisher(
+        broker_host=args.mqtt_host,
+        broker_port=args.mqtt_port,
+    ) if mqtt_enabled else None
     
     screenshot_count = 0
     emotion_update_interval = 0.3  
@@ -573,6 +751,10 @@ def main():
             # (If seats are disabled we currently skip per-face emotion updates here.)
             last_emotion_update = current_time
         
+        # Publish seat emotions via MQTT
+        if mqtt_publisher and seat_emotions:
+            mqtt_publisher.publish_emotions(seat_emotions, current_time)
+        
         # Clean up emotions and sleep state for vacated seats (only when seat manager exists)
         if detector.use_seats and detector.seat_manager:
             for seat_id in list(seat_emotions.keys()):
@@ -630,6 +812,8 @@ def main():
     
     cap.release()
     cv2.destroyAllWindows()
+    if mqtt_publisher:
+        mqtt_publisher.stop()
     print("Face detection stopped.")
 
 if __name__ == "__main__":

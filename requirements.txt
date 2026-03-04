@@ -82,3 +82,5 @@ aiosqlite
 ollama
 pydantic
 chromadb
+paho-mqtt
+cryptography==41.0.4

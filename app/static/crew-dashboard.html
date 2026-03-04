@@ -1,822 +1,522 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Crew Dashboard - Flight Attendant Alerts</title>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="/static/vendor/js/vue.global.prod.js"></script>
+    <link href="/static/vendor/fonts/inter.css" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/crew-dashboard.css">
-    <style>
-        /* Additional styles for video feed */
-        .video-feed-container {
-            background: var(--color-bg-secondary, #1e1e1e);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 24px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-        }
-        
-        .video-feed-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-        
-        .video-feed-title {
-            font-size: 18px;
-            font-weight: 600;
-            color: var(--color-text-primary, #ffffff);
-        }
-        
-        .video-status {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 14px;
-            color: var(--color-text-secondary, #b0b0b0);
-        }
-        
-        .video-status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #ff4444;
-        }
-        
-        .video-status-dot.live {
-            background: #00ff00;
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        .video-wrapper {
-            position: relative;
-            width: 100%;
-            min-height: 140px;
-            background: #000;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        
-        .video-stream {
-            width: 100%;
-            height: auto;
-            display: block;
-        }
-        
-        .video-overlay {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: white;
-            font-size: 16px;
-            text-align: center;
-        }
-        
-        .loading-spinner {
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-top: 3px solid white;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 10px;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        /* Active category highlight */
-        .category-item.active {
-            background: rgba(255,255,255,0.03);
-            border-left: 3px solid var(--color-accent, #00b4d8);
-            padding-left: 10px;
-        }
-    </style>
 </head>
 <body>
-    <div id="root"></div>
+    <div id="app">
+        <div class="dashboard-container">
 
-    <script type="text/babel">
-        const { useState, useEffect, useRef, useCallback, useMemo } = React;
-
-        // Helper functions
-        const getServiceIcon = (serviceType) => {
-            const icons = {
-                'beverage': '🍹', 'food': '🍽️', 'blanket': '🛏️', 'pillow': '🛏️',
-                'assistance': '🆘', 'medical': '🏥', 'entertainment': '🎬', 'other': '📢'
-            };
-            return icons[serviceType?.toLowerCase()] || '📢';
-        };
-
-        const capitalizeFirst = (str) => {
-            return str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
-        };
-
-        const formatTime = (timestamp) => {
-            const date = new Date(timestamp);
-            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-        };
-
-        const playNotificationSound = (priority) => {
-            try {
-                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                const oscillator = audioContext.createOscillator();
-                const gainNode = audioContext.createGain();
-
-                oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-
-                oscillator.frequency.value = priority === 'high' ? 1000 : 600;
-                oscillator.type = 'sine';
-
-                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
-
-                oscillator.start(audioContext.currentTime);
-                oscillator.stop(audioContext.currentTime + 0.5);
-            } catch (e) {
-                console.log('Audio not supported');
-            }
-        };
-
-        // Video Feed Component
-        function VideoFeed({ videoUrl = "/video_feed" }) {
-            const [isLoading, setIsLoading] = useState(false);
-            const [hasError, setHasError] = useState(false);
-            const [seatData, setSeatData] = useState(null);
-            const [cvEnabled, setCvEnabled] = useState(false);
-            const [cvToggling, setCvToggling] = useState(false);
-            const imgRef = useRef(null);
-
-            // Check CV status on mount
-            useEffect(() => {
-                const checkCvStatus = async () => {
-                    try {
-                        const response = await fetch('/api/cv/status');
-                        if (response.ok) {
-                            const data = await response.json();
-                            setCvEnabled(data.enabled);
-                            if (data.enabled) setIsLoading(true);
-                        }
-                    } catch (error) {
-                        console.error('Failed to fetch CV status:', error);
-                    }
-                };
-                checkCvStatus();
-            }, []);
-
-            // Fetch seat calibration data (only when CV is enabled)
-            useEffect(() => {
-                if (!cvEnabled) {
-                    setSeatData(null);
-                    return;
-                }
-                const fetchSeatData = async () => {
-                    try {
-                        const response = await fetch('/api/seats');
-                        if (response.ok) {
-                            const data = await response.json();
-                            setSeatData(data);
-                            console.log('Seat calibration loaded:', data);
-                        }
-                    } catch (error) {
-                        console.error('Failed to fetch seat data:', error);
-                    }
-                };
-                
-                fetchSeatData();
-                const interval = setInterval(fetchSeatData, 2000); // Refresh every 2s
-                return () => clearInterval(interval);
-            }, [cvEnabled]);
-
-            const toggleCv = async () => {
-                setCvToggling(true);
-                try {
-                    if (cvEnabled) {
-                        const response = await fetch('/api/cv/stop', { method: 'POST' });
-                        if (response.ok) {
-                            setCvEnabled(false);
-                            setIsLoading(false);
-                            setHasError(false);
-                        }
-                    } else {
-                        const response = await fetch('/api/cv/start', { method: 'POST' });
-                        if (response.ok) {
-                            setCvEnabled(true);
-                            setIsLoading(true);
-                            setHasError(false);
-                        } else {
-                            const err = await response.json();
-                            alert('Failed to start CV: ' + (err.detail || 'Unknown error'));
-                        }
-                    }
-                } catch (error) {
-                    console.error('CV toggle failed:', error);
-                    alert('CV toggle failed: ' + error.message);
-                } finally {
-                    setCvToggling(false);
-                }
-            };
-
-            const handleLoad = () => {
-                setIsLoading(false);
-                setHasError(false);
-            };
-
-            const handleError = () => {
-                setIsLoading(false);
-                setHasError(true);
-            };
-
-            return (
-                <div className="video-feed-container">
-                    <div className="video-feed-header">
-                        <div className="video-feed-title">📹 Live Passenger Monitor</div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            {cvEnabled && (
-                                <div className="video-status">
-                                    <div className={`video-status-dot ${!isLoading && !hasError ? 'live' : ''}`}></div>
-                                    <span>{!isLoading && !hasError ? 'LIVE' : hasError ? 'Disconnected' : 'Connecting...'}</span>
-                                </div>
-                            )}
-                            <button
-                                onClick={toggleCv}
-                                disabled={cvToggling}
-                                style={{
-                                    padding: '6px 16px',
-                                    borderRadius: '6px',
-                                    border: 'none',
-                                    cursor: cvToggling ? 'not-allowed' : 'pointer',
-                                    fontWeight: '600',
-                                    fontSize: '13px',
-                                    background: cvEnabled ? '#c0392b' : '#27ae60',
-                                    color: '#fff',
-                                    opacity: cvToggling ? 0.6 : 1,
-                                    transition: 'background 0.2s'
-                                }}
-                            >
-                                {cvToggling ? '...' : cvEnabled ? '⏹ Disable CV' : '▶ Enable CV'}
-                            </button>
-                        </div>
-                    </div>
-                    
-                    {/* Seat Grid Status */}
-                    {cvEnabled && seatData && seatData.seats && Object.keys(seatData.seats).length > 0 && (
-                        <div style={{
-                            background: 'rgba(0,0,0,0.3)',
-                            padding: '12px',
-                            borderRadius: '8px',
-                            marginBottom: '12px'
-                        }}>
-                            <div style={{
-                                fontSize: '14px',
-                                fontWeight: '600',
-                                marginBottom: '8px',
-                                color: '#00ff00'
-                            }}>
-                                🪑 Seat Status ({Object.keys(seatData.seats).length} seats calibrated)
-                            </div>
-                            <div style={{
-                                display: 'grid',
-                                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                                gap: '8px'
-                            }}>
-                                {Object.entries(seatData.seats).map(([seatId, seat]) => (
-                                    <div key={seatId} style={{
-                                        background: seat.occupied ? 'rgba(0,255,0,0.1)' : 'rgba(128,128,128,0.1)',
-                                        border: `2px solid ${seat.occupied ? '#00ff00' : '#666'}`,
-                                        borderRadius: '6px',
-                                        padding: '8px',
-                                        fontSize: '13px'
-                                    }}>
-                                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>
-                                            {seat.occupied ? '●' : '○'} {seatId}
-                                        </div>
-                                        {seat.occupied && seat.emotion && (
-                                            <div style={{ fontSize: '11px', color: '#aaa' }}>
-                                                {seat.emotion} ({Math.round(seat.confidence * 100)}%)
-                                            </div>
-                                        )}
-                                        {!seat.occupied && (
-                                            <div style={{ fontSize: '11px', color: '#666' }}>Vacant</div>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                    
-                    <div className="video-wrapper">
-                        {!cvEnabled && (
-                            <div className="video-overlay">
-                                <div style={{ fontSize: '48px', marginBottom: '10px' }}>📷</div>
-                                <div style={{ color: '#aaa', fontSize: '16px' }}>Computer vision is disabled</div>
-                                <div style={{ fontSize: '12px', marginTop: '8px', opacity: 0.6 }}>
-                                    Click "Enable CV" to start the camera feed
-                                </div>
-                            </div>
-                        )}
-                        {cvEnabled && isLoading && (
-                            <div className="video-overlay">
-                                <div className="loading-spinner"></div>
-                                <div>Connecting to camera...</div>
-                            </div>
-                        )}
-                        {cvEnabled && hasError && (
-                            <div className="video-overlay">
-                                <div style={{ fontSize: '48px', marginBottom: '10px' }}>📷</div>
-                                <div>Camera feed unavailable</div>
-                                <div style={{ fontSize: '12px', marginTop: '8px', opacity: 0.7 }}>
-                                    Check camera connection
-                                </div>
-                            </div>
-                        )}
-                        {cvEnabled && (
-                            <img
-                                ref={imgRef}
-                                src={videoUrl}
-                                alt="Live camera feed"
-                                className="video-stream"
-                                onLoad={handleLoad}
-                                onError={handleError}
-                                style={{ display: hasError ? 'none' : 'block' }}
-                            />
-                        )}
-                    </div>
-                </div>
-            );
-        }
-
-        // Custom hook for WebSocket connection
-        function useWebSocket(onMessage) {
-            const [isConnected, setIsConnected] = useState(false);
-            const wsRef = useRef(null);
-            const reconnectTimeoutRef = useRef(null);
-
-            const connect = useCallback(() => {
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const wsUrl = `${protocol}//${window.location.host}/ws/crew`;
-                
-                wsRef.current = new WebSocket(wsUrl);
-
-                wsRef.current.onopen = () => {
-                    console.log('WebSocket connected');
-                    setIsConnected(true);
-                };
-
-                wsRef.current.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
-                    onMessage(data);
-                };
-
-                wsRef.current.onclose = () => {
-                    console.log('WebSocket disconnected');
-                    setIsConnected(false);
-                    reconnectTimeoutRef.current = setTimeout(connect, 3000);
-                };
-
-                wsRef.current.onerror = (error) => {
-                    console.error('WebSocket error:', error);
-                };
-            }, [onMessage]);
-
-            useEffect(() => {
-                connect();
-                return () => {
-                    if (wsRef.current) {
-                        wsRef.current.close();
-                    }
-                    if (reconnectTimeoutRef.current) {
-                        clearTimeout(reconnectTimeoutRef.current);
-                    }
-                };
-            }, [connect]);
-
-            return isConnected;
-        }
-
-        // Connection Status Component
-        function ConnectionStatus({ isConnected }) {
-            return (
-                <div className="connection-status">
-                    <div className={`status-indicator ${isConnected ? 'connected' : ''}`}></div>
+            <!-- SIDEBAR -->
+            <aside class="sidebar">
+                <div class="sidebar-brand">
+                    <div class="brand-icon"></div>
                     <div>
-                        <div style={{ fontWeight: 600, fontSize: '14px' }}>Connection</div>
-                        <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
-                            {isConnected ? 'Live' : 'Reconnecting...'}
-                        </div>
+                        <div class="brand-title">Crew Panel</div>
+                        <div class="brand-sub">Flight Operations</div>
                     </div>
                 </div>
-            );
-        }
 
-        // System Status Component (shows ChromaDB, model, etc.)
-        function SystemStatus() {
-            const [stats, setStats] = useState(null);
-            const [health, setHealth] = useState(null);
-
-            useEffect(() => {
-                const fetchStatus = async () => {
-                    try {
-                        const [statsRes, healthRes] = await Promise.all([
-                            fetch('/api/stats'),
-                            fetch('/api/health')
-                        ]);
-                        if (statsRes.ok) setStats(await statsRes.json());
-                        if (healthRes.ok) setHealth(await healthRes.json());
-                    } catch (error) {
-                        console.error('Failed to fetch system status:', error);
-                    }
-                };
-                fetchStatus();
-                const interval = setInterval(fetchStatus, 10000); // Refresh every 10s
-                return () => clearInterval(interval);
-            }, []);
-
-            return (
-                <div style={{
-                    background: 'rgba(0,0,0,0.2)',
-                    borderRadius: '8px',
-                    padding: '12px',
-                    marginTop: '16px',
-                    fontSize: '12px'
-                }}>
-                    <div style={{ 
-                        fontWeight: 600, 
-                        marginBottom: '10px', 
-                        fontSize: '13px',
-                        color: 'var(--color-text-secondary)'
-                    }}>
-                        🖥️ SYSTEM STATUS
-                    </div>
-                    
-                    {/* ChromaDB Status */}
-                    <div style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
-                        alignItems: 'center',
-                        marginBottom: '6px'
-                    }}>
-                        <span style={{ color: 'var(--color-text-secondary)' }}>ChromaDB</span>
-                        <span style={{ 
-                            color: stats?.chroma_available ? '#22c55e' : '#ef4444',
-                            fontWeight: 500
-                        }}>
-                            {stats?.chroma_available ? '● Connected' : '○ Offline'}
-                        </span>
-                    </div>
-                    
-                    {/* LLM Model */}
-                    <div style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
-                        alignItems: 'center',
-                        marginBottom: '6px'
-                    }}>
-                        <span style={{ color: 'var(--color-text-secondary)' }}>LLM Model</span>
-                        <span style={{ color: '#a1a1aa' }}>
-                            {stats?.model || 'llama3.2:3b'}
-                        </span>
-                    </div>
-                    
-                    {/* Health Status */}
-                    <div style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
-                        alignItems: 'center',
-                        marginBottom: '6px'
-                    }}>
-                        <span style={{ color: 'var(--color-text-secondary)' }}>API Health</span>
-                        <span style={{ 
-                            color: health?.status === 'ok' ? '#22c55e' : '#ef4444',
-                            fontWeight: 500
-                        }}>
-                            {health?.status === 'ok' ? '● Healthy' : '○ Error'}
-                        </span>
-                    </div>
-                    
-                    {/* Cache Size */}
-                    <div style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
-                        alignItems: 'center',
-                        marginBottom: '6px'
-                    }}>
-                        <span style={{ color: 'var(--color-text-secondary)' }}>Cache Size</span>
-                        <span style={{ color: '#a1a1aa' }}>
-                            {stats?.cache_size ?? 0} entries
-                        </span>
-                    </div>
-                    
-                    {/* Total Queries */}
-                    <div style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
-                        alignItems: 'center'
-                    }}>
-                        <span style={{ color: 'var(--color-text-secondary)' }}>Total Queries</span>
-                        <span style={{ color: '#a1a1aa' }}>
-                            {stats?.total_queries ?? 0}
+                <!-- Connection Status -->
+                <div class="connection-status">
+                    <div :class="['status-dot', { connected: isConnected }]"></div>
+                    <div class="status-text">
+                        <span class="status-label">WebSocket</span>
+                        <span :class="['status-value', isConnected ? 'text-success' : 'text-warning']">
+                            {{ isConnected ? 'Live' : 'Reconnecting' }}
                         </span>
                     </div>
                 </div>
-            );
-        }
 
-        // Stats Sidebar Component
-        function StatsSidebar({ alerts, isConnected, selectedCategory, onCategoryClick }) {
-            const stats = useMemo(() => {
-                const pending = alerts.filter(a => !a.acknowledged).length;
-                const categories = { beverage: 0, food: 0, comfort: 0, medical: 0, other: 0 };
-
-                alerts.filter(a => !a.acknowledged).forEach(alert => {
-                    const type = alert.serviceType?.toLowerCase();
-                    if (type === 'beverage') categories.beverage++;
-                    else if (type === 'food') categories.food++;
-                    else if (['blanket', 'pillow'].includes(type)) categories.comfort++;
-                    else if (type === 'medical') categories.medical++;
-                    else categories.other++;
-                });
-
-                return { pending, total: alerts.length, categories };
-            }, [alerts]);
-
-            return (
-                <div className="sidebar">
-                    <h2 style={{ marginBottom: '24px' }}>📊 Crew Panel</h2>
-                    
-                    <ConnectionStatus isConnected={isConnected} />
-
-                    <div className="stats-grid">
-                        <div className="stat-card">
-                            <div className="stat-value urgent">{stats.pending}</div>
-                            <div className="stat-label">Pending</div>
-                        </div>
-                        <div className="stat-card">
-                            <div className="stat-value">{stats.total}</div>
-                            <div className="stat-label">Total</div>
-                        </div>
+                <!-- Stats Grid -->
+                <div class="stats-grid">
+                    <div class="stat-card stat-urgent">
+                        <div class="stat-value">{{ stats.pending }}</div>
+                        <div class="stat-label">Pending</div>
                     </div>
-
-                    <h3 style={{ marginBottom: '12px', fontSize: '14px', color: 'var(--color-text-secondary)' }}>CATEGORIES</h3>
-                    <div className="category-list">
-                        <div
-                            className={`category-item ${selectedCategory === 'beverage' ? 'active' : ''}`}
-                            onClick={() => onCategoryClick && onCategoryClick('beverage')}
-                        >
-                            <span>🍹 Beverages</span>
-                            <span className="category-count">{stats.categories.beverage}</span>
-                        </div>
-                        <div
-                            className={`category-item ${selectedCategory === 'food' ? 'active' : ''}`}
-                            onClick={() => onCategoryClick && onCategoryClick('food')}
-                        >
-                            <span>🍽️ Food</span>
-                            <span className="category-count">{stats.categories.food}</span>
-                        </div>
-                        <div
-                            className={`category-item ${selectedCategory === 'comfort' ? 'active' : ''}`}
-                            onClick={() => onCategoryClick && onCategoryClick('comfort')}
-                        >
-                            <span>🛏️ Comfort</span>
-                            <span className="category-count">{stats.categories.comfort}</span>
-                        </div>
-                        <div
-                            className={`category-item ${selectedCategory === 'medical' ? 'active' : ''}`}
-                            onClick={() => onCategoryClick && onCategoryClick('medical')}
-                        >
-                            <span>🏥 Medical</span>
-                            <span className="category-count">{stats.categories.medical}</span>
-                        </div>
-                        <div
-                            className={`category-item ${selectedCategory === 'other' ? 'active' : ''}`}
-                            onClick={() => onCategoryClick && onCategoryClick('other')}
-                        >
-                            <span>📢 Other</span>
-                            <span className="category-count">{stats.categories.other}</span>
-                        </div>
-                        <div
-                            className={`category-item ${selectedCategory === 'video' ? 'active' : ''}`}
-                            onClick={() => onCategoryClick && onCategoryClick('video')}
-                            style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '8px' }}
-                        >
-                            <span>📹 Camera Feed</span>
-                            <span className="category-count">{1}</span>
-                        </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{{ stats.total }}</div>
+                        <div class="stat-label">Total</div>
                     </div>
-
-                    <SystemStatus />
                 </div>
-            );
-        }
 
-        // Alert Card Component
-        function AlertCard({ alert, onAcknowledge }) {
-            return (
-                <div className={`alert-card priority-${alert.priority} ${alert.acknowledged ? 'acknowledged' : ''}`}>
-                    <div className="alert-header">
-                        <div>
-                            <div className="alert-seat">🪑 Seat {alert.seatNumber}</div>
-                            <div className="alert-type">
-                                <span>{getServiceIcon(alert.serviceType)} {capitalizeFirst(alert.serviceType)}</span>
-                                {!alert.acknowledged ? (
-                                    <span className={`badge badge-${alert.priority === 'high' ? 'danger' : 'warning'}`}>NEW</span>
-                                ) : (
-                                    <span className="badge badge-info">DONE</span>
-                                )}
+                <!-- Category Filter -->
+                <div class="section-label">CATEGORIES</div>
+                <div class="category-list">
+                    <div
+                        v-for="cat in categories"
+                        :key="cat.key"
+                        :class="['category-item', { active: selectedCategory === cat.key }]"
+                        @click="selectedCategory = cat.key"
+                    >
+                        <span>{{ cat.icon }} {{ cat.label }}</span>
+                        <span class="category-badge">{{ stats.categories[cat.key] || 0 }}</span>
+                    </div>
+                    <div
+                        :class="['category-item category-item-divider', { active: selectedCategory === 'video' }]"
+                        @click="selectedCategory = 'video'"
+                    >
+                        <span> Camera Feed</span>
+                        <span class="category-badge">1</span>
+                    </div>
+                </div>
+
+                <!-- System Status -->
+                <div class="system-status">
+                    <div class="section-label">SYSTEM STATUS</div>
+                    <template v-if="systemStats || systemHealth">
+                        <div class="system-row" v-if="systemStats">
+                            <span class="sys-label">ChromaDB</span>
+                            <span :class="systemStats.chroma_available ? 'text-success' : 'text-danger'">
+                                {{ systemStats.chroma_available ? ' Connected' : ' Offline' }}
+                            </span>
+                        </div>
+                        <div class="system-row" v-if="systemStats">
+                            <span class="sys-label">LLM Model</span>
+                            <span class="sys-value">{{ systemStats.model || 'llama3.2:3b' }}</span>
+                        </div>
+                        <div class="system-row" v-if="systemHealth">
+                            <span class="sys-label">API Health</span>
+                            <span :class="systemHealth.status === 'ok' ? 'text-success' : 'text-danger'">
+                                {{ systemHealth.status === 'ok' ? ' Healthy' : ' Error' }}
+                            </span>
+                        </div>
+                        <div class="system-row" v-if="systemStats">
+                            <span class="sys-label">Cache</span>
+                            <span class="sys-value">{{ systemStats.cache_size ?? 0 }} entries</span>
+                        </div>
+                        <div class="system-row" v-if="systemStats">
+                            <span class="sys-label">Queries</span>
+                            <span class="sys-value">{{ systemStats.total_queries ?? 0 }}</span>
+                        </div>
+                    </template>
+                    <div v-else class="sys-loading">Loading</div>
+                </div>
+            </aside>
+
+            <!-- MAIN PANEL -->
+            <div class="main-panel">
+
+                <!-- Header -->
+                <header class="panel-header">
+                    <div class="header-left">
+                        <h1> Crew Alert Dashboard</h1>
+                    </div>
+                    <div class="header-right">
+                        <div v-if="stats.pending > 0" class="pending-badge">
+                            {{ stats.pending }} pending
+                        </div>
+                    </div>
+                </header>
+
+                <!-- VIDEO FEED VIEW -->
+                <div v-if="selectedCategory === 'video'" class="panel-content">
+                    <div class="video-card">
+                        <div class="video-card-header">
+                            <div class="video-card-title"> Live Passenger Monitor</div>
+                            <div class="video-controls">
+                                <div v-if="cvEnabled" class="live-status">
+                                    <div :class="['live-dot', { live: !cvLoading && !cvError }]"></div>
+                                    <span>{{ !cvLoading && !cvError ? 'LIVE' : cvError ? 'Disconnected' : 'Connecting' }}</span>
+                                </div>
+                                <button
+                                    :class="['cv-toggle-btn', cvEnabled ? 'btn-stop' : 'btn-start']"
+                                    :disabled="cvToggling"
+                                    @click="toggleCv"
+                                >
+                                    {{ cvToggling ? '' : cvEnabled ? ' Disable CV' : ' Enable CV' }}
+                                </button>
                             </div>
                         </div>
-                        <div className="alert-time">{formatTime(alert.timestamp)}</div>
-                    </div>
-                    <div className="alert-message">"{alert.message}"</div>
-                    {!alert.acknowledged && (
-                        <div className="alert-actions">
-                            <button className="btn btn-success" onClick={() => onAcknowledge(alert.id)}>
-                                ✓ Mark as Handled
-                            </button>
+
+                        <!-- Seat Grid -->
+                        <div v-if="cvEnabled && seatData && Object.keys(seatData.seats || {}).length > 0" class="seat-grid-wrapper">
+                            <div class="seat-grid-label">
+                                 Seat Status
+                                <span class="seat-count">({{ Object.keys(seatData.seats).length }} calibrated)</span>
+                            </div>
+                            <div class="seat-grid">
+                                <div
+                                    v-for="(seat, seatId) in seatData.seats"
+                                    :key="seatId"
+                                    :class="['seat-tile', { occupied: seat.occupied }]"
+                                >
+                                    <div class="seat-tile-id">{{ seat.occupied ? '' : '' }} {{ seatId }}</div>
+                                    <div v-if="seat.occupied && seat.emotion" class="seat-tile-emotion">
+                                        {{ seat.emotion }} ({{ Math.round(seat.confidence * 100) }}%)
+                                    </div>
+                                    <div v-else-if="!seat.occupied" class="seat-tile-vacant">Vacant</div>
+                                </div>
+                            </div>
                         </div>
-                    )}
-                </div>
-            );
-        }
 
-        // Alert List Component
-        function AlertList({ alerts, filter, onAcknowledge }) {
-            const filteredAlerts = useMemo(() => {
-                if (filter === 'pending') {
-                    return alerts.filter(a => !a.acknowledged);
-                } else if (filter === 'acknowledged') {
-                    return alerts.filter(a => a.acknowledged);
-                }
-                return alerts;
-            }, [alerts, filter]);
-
-            if (filteredAlerts.length === 0) {
-                return (
-                    <div className="empty-state">
-                        <div className="empty-state-icon">✈️</div>
-                        <h3>No Alerts</h3>
-                        <p>Waiting for passenger service requests...</p>
+                        <!-- Video Stream -->
+                        <div class="video-wrapper">
+                            <div v-if="!cvEnabled" class="video-placeholder">
+                                <div class="placeholder-icon"></div>
+                                <div class="placeholder-title">Computer vision is disabled</div>
+                                <div class="placeholder-sub">Click "Enable CV" to start the camera feed</div>
+                            </div>
+                            <div v-else-if="cvLoading" class="video-placeholder">
+                                <div class="loading-spinner"></div>
+                                <div class="placeholder-title">Connecting to camera</div>
+                            </div>
+                            <div v-else-if="cvError" class="video-placeholder">
+                                <div class="placeholder-icon"></div>
+                                <div class="placeholder-title">Camera feed unavailable</div>
+                                <div class="placeholder-sub">Check camera connection</div>
+                            </div>
+                            <img
+                                v-if="cvEnabled"
+                                src="/video_feed"
+                                alt="Live camera feed"
+                                class="video-stream"
+                                :style="{ display: cvError ? 'none' : 'block' }"
+                                @load="cvLoading = false; cvError = false"
+                                @error="cvLoading = false; cvError = true"
+                            />
+                        </div>
                     </div>
-                );
-            }
-
-            return (
-                <div>
-                    {filteredAlerts.map(alert => (
-                        <AlertCard
-                            key={alert.id}
-                            alert={alert}
-                            onAcknowledge={onAcknowledge}
-                        />
-                    ))}
                 </div>
-            );
-        }
 
-        // Filter Buttons Component
-        function FilterButtons({ currentFilter, onFilterChange }) {
-            const filters = [
-                { key: 'all', label: 'All Alerts' },
-                { key: 'pending', label: '⏳ Pending' },
-                { key: 'acknowledged', label: '✓ Acknowledged' }
-            ];
-
-            return (
-                <div className="filter-buttons">
-                    {filters.map(({ key, label }) => (
+                <!-- ALERT LIST VIEW -->
+                <div v-else class="panel-content">
+                    <!-- Filter Tabs -->
+                    <div class="filter-tabs">
                         <button
-                            key={key}
-                            className={`filter-btn ${currentFilter === key ? 'active' : ''}`}
-                            onClick={() => onFilterChange(key)}
+                            v-for="f in filters"
+                            :key="f.key"
+                            :class="['filter-tab', { active: currentFilter === f.key }]"
+                            @click="currentFilter = f.key"
                         >
-                            {label}
+                            {{ f.label }}
                         </button>
-                    ))}
+                    </div>
+
+                    <!-- Alerts -->
+                    <div class="alerts-list">
+                        <!-- Empty State -->
+                        <div v-if="filteredAlerts.length === 0" class="empty-state">
+                            <div class="empty-icon"></div>
+                            <h3>No Alerts</h3>
+                            <p>Waiting for passenger service requests</p>
+                        </div>
+
+                        <!-- Alert Cards -->
+                        <div
+                            v-for="alert in filteredAlerts"
+                            :key="alert.id"
+                            :class="['alert-card', 'priority-' + alert.priority, { acknowledged: alert.acknowledged }]"
+                        >
+                            <div class="alert-card-header">
+                                <div class="alert-meta">
+                                    <div class="alert-seat"> Seat {{ alert.seatNumber }}</div>
+                                    <div class="alert-type-row">
+                                        <span class="alert-type-label">
+                                            {{ getServiceIcon(alert.serviceType) }} {{ capitalizeFirst(alert.serviceType) }}
+                                        </span>
+                                        <span
+                                            v-if="!alert.acknowledged"
+                                            :class="['alert-badge', alert.priority === 'high' ? 'badge-danger' : 'badge-warning']"
+                                        >NEW</span>
+                                        <span v-else class="alert-badge badge-done">DONE</span>
+                                    </div>
+                                </div>
+                                <div class="alert-time">{{ formatTime(alert.timestamp) }}</div>
+                            </div>
+                            <div class="alert-message">"{{ alert.message }}"</div>
+                            <div v-if="!alert.acknowledged" class="alert-actions">
+                                <button class="btn-acknowledge" @click="acknowledgeAlert(alert.id)">
+                                     Mark as Handled
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            );
-        }
 
-        // Main App Component
-        function CrewDashboardApp() {
-            const [alerts, setAlerts] = useState([]);
-            const [currentFilter, setCurrentFilter] = useState('all');
-            const [selectedCategory, setSelectedCategory] = useState('all');
+            </div><!-- end main-panel -->
+        </div><!-- end dashboard-container -->
 
-            // Handle new alert from WebSocket
-            const handleNewAlert = useCallback((alert) => {
-                setAlerts(prevAlerts => {
-                    // Check if alert already exists
-                    const existingIndex = prevAlerts.findIndex(a => a.id === alert.id);
-                    if (existingIndex !== -1) {
-                        return prevAlerts;
-                    }
-                    
-                    // Add default values if missing
-                    const newAlert = {
-                        ...alert,
-                        id: alert.id || Date.now() + Math.random(),
-                        acknowledged: alert.acknowledged ?? false
-                    };
-                    
-                    playNotificationSound(alert.priority);
-                    return [newAlert, ...prevAlerts];
+        <!-- Toast -->
+        <div v-if="toast" :class="['toast', toast.type]">
+            <span>{{ toast.icon }}</span>
+            <span>{{ toast.message }}</span>
+        </div>
+    </div><!-- end #app -->
+
+    <script>
+        const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+
+        createApp({
+            setup() {
+                //  State 
+                const alerts           = ref([]);
+                const currentFilter    = ref('all');
+                const selectedCategory = ref('all');
+                const isConnected      = ref(false);
+                const toast            = ref(null);
+
+                // CV state
+                const cvEnabled  = ref(false);
+                const cvToggling = ref(false);
+                const cvLoading  = ref(false);
+                const cvError    = ref(false);
+                const seatData   = ref(null);
+
+                // System status
+                const systemStats  = ref(null);
+                const systemHealth = ref(null);
+
+                // Internal timers / WS
+                let wsRef                = null;
+                let reconnectTimeout     = null;
+                let seatDataInterval     = null;
+                let systemStatusInterval = null;
+
+                //  Static data 
+                const categories = [
+                    { key: 'beverage', icon: '', label: 'Beverages' },
+                    { key: 'food',     icon: '', label: 'Food'      },
+                    { key: 'comfort',  icon: '', label: 'Comfort'   },
+                    { key: 'medical',  icon: '', label: 'Medical'   },
+                    { key: 'other',    icon: '', label: 'Other'      },
+                ];
+
+                const filters = [
+                    { key: 'all',          label: 'All Alerts'    },
+                    { key: 'pending',      label: ' Pending'    },
+                    { key: 'acknowledged', label: ' Acknowledged' },
+                ];
+
+                //  Computed 
+                const stats = computed(() => {
+                    const pending = alerts.value.filter(a => !a.acknowledged).length;
+                    const total   = alerts.value.length;
+                    const cats    = { beverage: 0, food: 0, comfort: 0, medical: 0, other: 0, video: 1 };
+
+                    alerts.value.filter(a => !a.acknowledged).forEach(a => {
+                        const t = a.serviceType?.toLowerCase();
+                        if      (t === 'beverage')                     cats.beverage++;
+                        else if (t === 'food')                         cats.food++;
+                        else if (['blanket', 'pillow'].includes(t))    cats.comfort++;
+                        else if (t === 'medical')                      cats.medical++;
+                        else                                           cats.other++;
+                    });
+
+                    return { pending, total, categories: cats };
                 });
-            }, []);
 
-            // Connect to WebSocket
-            const isConnected = useWebSocket(handleNewAlert);
+                const filteredAlerts = computed(() => {
+                    let list = alerts.value;
 
-            // Load existing alerts on mount
-            useEffect(() => {
-                const loadExistingAlerts = async () => {
-                    try {
-                        const response = await fetch('/api/crew/alerts');
-                        if (response.ok) {
-                            const existingAlerts = await response.json();
-                            setAlerts(existingAlerts);
-                            console.log(`Loaded ${existingAlerts.length} existing alerts`);
-                        }
-                    } catch (error) {
-                        console.error('Failed to load existing alerts:', error);
+                    // Category filter
+                    if (selectedCategory.value !== 'all' && selectedCategory.value !== 'video') {
+                        list = list.filter(a => {
+                            const t = a.serviceType?.toLowerCase();
+                            if (selectedCategory.value === 'comfort') return ['blanket', 'pillow'].includes(t);
+                            return t === selectedCategory.value;
+                        });
                     }
+
+                    // Tab filter
+                    if (currentFilter.value === 'pending')      return list.filter(a => !a.acknowledged);
+                    if (currentFilter.value === 'acknowledged') return list.filter(a =>  a.acknowledged);
+                    return list;
+                });
+
+                //  Helpers 
+                const getServiceIcon = (type) => {
+                    const icons = {
+                        beverage: '', food: '', blanket: '', pillow: '',
+                        assistance: '', medical: '', entertainment: '', other: ''
+                    };
+                    return icons[type?.toLowerCase()] || '';
                 };
-                loadExistingAlerts();
-            }, []);
 
-            // Acknowledge alert handler
-            const handleAcknowledge = useCallback(async (alertId) => {
-                setAlerts(prevAlerts =>
-                    prevAlerts.map(alert =>
-                        alert.id === alertId ? { ...alert, acknowledged: true } : alert
-                    )
-                );
+                const capitalizeFirst = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
 
-                const alert = alerts.find(a => a.id === alertId);
-                if (alert) {
+                const formatTime = (ts) => {
+                    if (!ts) return '';
+                    return new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                };
+
+                const showToast = (message, type = 'success', icon = '') => {
+                    toast.value = { message, type, icon };
+                    setTimeout(() => { toast.value = null; }, 3000);
+                };
+
+                const playNotificationSound = (priority) => {
+                    try {
+                        const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+                        const osc  = ctx.createOscillator();
+                        const gain = ctx.createGain();
+                        osc.connect(gain);
+                        gain.connect(ctx.destination);
+                        osc.frequency.value = priority === 'high' ? 1000 : 600;
+                        osc.type = 'sine';
+                        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+                        osc.start(ctx.currentTime);
+                        osc.stop(ctx.currentTime + 0.5);
+                    } catch (e) { /* audio not available */ }
+                };
+
+                //  WebSocket 
+                const handleNewAlert = (alert) => {
+                    if (alerts.value.some(a => a.id === alert.id)) return;
+                    alerts.value.unshift({
+                        ...alert,
+                        id:           alert.id || Date.now() + Math.random(),
+                        acknowledged: alert.acknowledged ?? false,
+                    });
+                    playNotificationSound(alert.priority);
+                };
+
+                const connectWebSocket = () => {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    wsRef = new WebSocket(`${protocol}//${window.location.host}/ws/crew`);
+
+                    wsRef.onopen = () => {
+                        isConnected.value = true;
+                        console.log('WebSocket connected');
+                    };
+                    wsRef.onmessage = (e) => {
+                        try { handleNewAlert(JSON.parse(e.data)); }
+                        catch (err) { console.error('WS parse error:', err); }
+                    };
+                    wsRef.onclose = () => {
+                        isConnected.value = false;
+                        reconnectTimeout = setTimeout(connectWebSocket, 3000);
+                    };
+                    wsRef.onerror = (e) => { console.error('WebSocket error:', e); };
+                };
+
+                //  Alerts API 
+                const loadAlerts = async () => {
+                    try {
+                        const res = await fetch('/api/crew/alerts');
+                        if (res.ok) alerts.value = await res.json();
+                    } catch (e) { console.error('Failed to load alerts:', e); }
+                };
+
+                const acknowledgeAlert = async (alertId) => {
+                    alerts.value = alerts.value.map(a =>
+                        a.id === alertId ? { ...a, acknowledged: true } : a
+                    );
+                    const alert = alerts.value.find(a => a.id === alertId);
                     try {
                         await fetch('/api/crew/acknowledge', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ alertId: alertId, seatNumber: alert.seatNumber })
+                            body: JSON.stringify({ alertId, seatNumber: alert?.seatNumber })
                         });
-                    } catch (error) {
-                        console.error('Failed to acknowledge alert:', error);
+                        showToast('Alert marked as handled', 'success', '');
+                    } catch (e) {
+                        console.error('Acknowledge failed:', e);
+                        showToast('Failed to acknowledge alert', 'error', '');
                     }
-                }
-            }, [alerts]);
+                };
 
-            return (
-                <div className="dashboard-container">
-                    <StatsSidebar
-                        alerts={alerts}
-                        isConnected={isConnected}
-                        selectedCategory={selectedCategory}
-                        onCategoryClick={(cat) => setSelectedCategory(cat)}
-                    />
+                //  CV Controls 
+                const fetchSeatData = async () => {
+                    try {
+                        const res = await fetch('/api/seats');
+                        if (res.ok) seatData.value = await res.json();
+                    } catch (e) { console.error('Failed to fetch seat data:', e); }
+                };
 
-                    <div className="main-panel">
-                        <div className="header">
-                            <h1>🚨 Crew Alert Dashboard</h1>
-                        </div>
+                const toggleCv = async () => {
+                    cvToggling.value = true;
+                    try {
+                        if (cvEnabled.value) {
+                            const res = await fetch('/api/cv/stop', { method: 'POST' });
+                            if (res.ok) {
+                                cvEnabled.value = false;
+                                cvLoading.value = false;
+                                cvError.value   = false;
+                                seatData.value  = null;
+                                clearInterval(seatDataInterval);
+                            }
+                        } else {
+                            const res = await fetch('/api/cv/start', { method: 'POST' });
+                            if (res.ok) {
+                                cvEnabled.value = true;
+                                cvLoading.value = true;
+                                cvError.value   = false;
+                                fetchSeatData();
+                                seatDataInterval = setInterval(fetchSeatData, 2000);
+                            } else {
+                                const err = await res.json();
+                                showToast('Failed to start CV: ' + (err.detail || 'Unknown error'), 'error', '');
+                            }
+                        }
+                    } catch (e) {
+                        console.error('CV toggle failed:', e);
+                        showToast('CV toggle failed: ' + e.message, 'error', '');
+                    } finally {
+                        cvToggling.value = false;
+                    }
+                };
 
-                        {/* Show video only when 'video' category selected */}
-                        {selectedCategory === 'video' ? (
-                            <VideoFeed />
-                        ) : (
-                            <div className="alert-section">
-                                <FilterButtons
-                                    currentFilter={currentFilter}
-                                    onFilterChange={setCurrentFilter}
-                                />
+                //  System Status 
+                const fetchSystemStatus = async () => {
+                    try {
+                        const [sRes, hRes] = await Promise.all([
+                            fetch('/api/stats'),
+                            fetch('/api/health')
+                        ]);
+                        if (sRes.ok) systemStats.value  = await sRes.json();
+                        if (hRes.ok) systemHealth.value = await hRes.json();
+                    } catch (e) { console.error('System status fetch failed:', e); }
+                };
 
-                                <div id="alertsList">
-                                    <AlertList
-                                        alerts={alerts}
-                                        filter={currentFilter}
-                                        onAcknowledge={handleAcknowledge}
-                                    />
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            );
-        }
+                //  Lifecycle 
+                onMounted(async () => {
+                    connectWebSocket();
+                    await loadAlerts();
 
-        // Render app
-        ReactDOM.createRoot(document.getElementById('root')).render(<CrewDashboardApp />);
+                    // Check initial CV status
+                    try {
+                        const res = await fetch('/api/cv/status');
+                        if (res.ok) {
+                            const d = await res.json();
+                            cvEnabled.value = d.enabled;
+                            if (d.enabled) {
+                                cvLoading.value  = true;
+                                fetchSeatData();
+                                seatDataInterval = setInterval(fetchSeatData, 2000);
+                            }
+                        }
+                    } catch (e) { /* ignore */ }
+
+                    fetchSystemStatus();
+                    systemStatusInterval = setInterval(fetchSystemStatus, 10000);
+                });
+
+                onUnmounted(() => {
+                    if (wsRef) wsRef.close();
+                    if (reconnectTimeout) clearTimeout(reconnectTimeout);
+                    clearInterval(seatDataInterval);
+                    clearInterval(systemStatusInterval);
+                });
+
+                return {
+                    alerts, currentFilter, selectedCategory,
+                    isConnected, toast,
+                    cvEnabled, cvToggling, cvLoading, cvError, seatData,
+                    systemStats, systemHealth,
+                    categories, filters,
+                    stats, filteredAlerts,
+                    toggleCv, acknowledgeAlert,
+                    getServiceIcon, capitalizeFirst, formatTime,
+                };
+            }
+        }).mount('#app');
     </script>
 </body>
 </html>

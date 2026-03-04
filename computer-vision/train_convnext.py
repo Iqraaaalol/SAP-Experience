@@ -349,7 +349,7 @@ def main():
     else:
         # Initial training on FER
         print("\n=== Training from ImageNet pretrained weights ===")
-        dataset_type = 'fer'
+        dataset_type = 'affectnet'
         deployment_mode = 'demo'  # Not used for FER, but kept for consistency
         use_two_phase = False
     
