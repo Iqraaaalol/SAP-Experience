@@ -43,3 +43,8 @@ ollama serve or have app open
 
 
 ### Refer to the website's README.md file to run the A/SAP webpage
+
+### How to run mood detection model:
+Go to the crew dashboard and enable CV.
+
+To calibrate temporary seat regions, run computer-vision/mood_detection.py and press 'c' to create a seat_calibration.json file that contains seating region information for mood detection
