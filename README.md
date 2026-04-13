@@ -40,3 +40,6 @@ ollama serve or have app open
 
 3. Access through network local passenger interface: "{Your_IP_here}:8000"
    Access through network crew dashboard with: "{Your_IP_here}:8000/crew-dashboard"
+
+
+### Refer to the website's README.md file to run the A/SAP webpage

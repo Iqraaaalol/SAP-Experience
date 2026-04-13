@@ -1,0 +1,81 @@
+
+# Python
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+*.egg
+*.manifest
+*.spec
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Streamlit cache
+.streamlit/
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+
+logs/
+*.log
+*.out
+*.err
+
+
+# OS / Editor files
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+
+# Node / Frontend 
+
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build / Packaging
+
+build/
+target/
+*.tar.gz
+*.zip
+
+# Environment / Secrets
+
+.env
+.env.*
+*.pem
+*.key
+*.crt
+secrets.json
+
+# Misc
+
+*.bak
+*.tmp
