@@ -2,6 +2,7 @@
 LLM service using Ollama for response generation.
 """
 import asyncio
+import time
 from ollama import Client
 from .config import OLLAMA_URL, MODEL_NAME
 
@@ -51,18 +52,59 @@ DEFAULT_TOOL = {
 
 class LlamaInterface:
     """Interface to interact with Ollama LLM."""
-    
+
+    _RECONNECT_INTERVAL = 30.0  # seconds between availability re-probes
+
     def __init__(self, ollama_url: str = OLLAMA_URL, model_name: str = MODEL_NAME, max_concurrency: int = 4):
         self.ollama_url = ollama_url
         self.model_name = model_name
-        self.client = Client(host=ollama_url)
         self._sema = asyncio.Semaphore(max_concurrency)
+        self._available = False
+        self._next_reconnect = 0.0
+        self._probe_and_set_url()
         print(f"LlamaInterface initialized")
         print(f"   Model: {self.model_name}")
         print(f"   URL: {self.ollama_url}")
+        print(f"   Available: {'yes' if self._available else 'no (offline mode)'}")
+
+    def _probe_url(self, url: str) -> bool:
+        """Quick check if Ollama is reachable at the given URL."""
+        try:
+            Client(host=url).list()
+            return True
+        except Exception:
+            return False
+
+    def _probe_and_set_url(self):
+        """Try configured URL, then localhost fallbacks. Updates ollama_url and _available."""
+        candidates = [self.ollama_url]
+        if not any(h in self.ollama_url for h in ('localhost', '127.0.0.1')):
+            candidates += ['http://localhost:11434', 'http://127.0.0.1:11434']
+        for url in candidates:
+            if self._probe_url(url):
+                if url != self.ollama_url:
+                    print(f"[LLM] Configured URL unreachable, fell back to {url}")
+                    self.ollama_url = url
+                self._available = True
+                return
+        self._available = False
+        print("[LLM] Ollama not reachable — running in offline mode")
+
+    def _check_availability(self) -> bool:
+        """Return availability, re-probing if the reconnect cooldown has elapsed."""
+        if self._available:
+            return True
+        now = time.monotonic()
+        if now >= self._next_reconnect:
+            self._next_reconnect = now + self._RECONNECT_INTERVAL
+            self._probe_and_set_url()
+        return self._available
     
     async def generate_response(self, prompt: str, temperature: float = 0.7) -> str:
         """Query model using Ollama library with retries and concurrency control."""
+        if not self._check_availability():
+            return "I'm currently offline — the AI assistant requires a connection to the Ollama service. Please try again later."
+
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
@@ -95,15 +137,20 @@ class LlamaInterface:
                     backoff = 0.5 * (2 ** (attempt - 1))
                     await asyncio.sleep(backoff)
                     continue
-                return f"Sorry, an error occurred: {str(e)}"
+                self._available = False
+                self._next_reconnect = time.monotonic() + self._RECONNECT_INTERVAL
+                return "I'm currently offline — the AI assistant requires a connection to the Ollama service. Please try again later."
 
     async def detect_service_with_tools(self, query: str, language: str = "en") -> dict | None:
         """
         Use LLM function calling to detect if query is a service request.
-        
+
         Returns:
             dict with service details if service detected, None otherwise
         """
+        if not self._check_availability():
+            return None
+
         try:
             system_prompt = """You are Avia, a helpful assistant on a flydubai aircraft in the air. 
 
@@ -172,6 +219,8 @@ User: "How are you?" → Answer: "I'm fine, thank you! How can I help you today?
                         backoff = 0.5 * (2 ** (attempt - 1))
                         await asyncio.sleep(backoff)
                         continue
+                    self._available = False
+                    self._next_reconnect = time.monotonic() + self._RECONNECT_INTERVAL
                     print(f"Tool detection error after retries: {e}")
                     return None
             

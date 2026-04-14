@@ -15,7 +15,9 @@
             <!-- SIDEBAR -->
             <aside class="sidebar">
                 <div class="sidebar-brand">
-                    <div class="brand-icon"></div>
+                    <div class="brand-icon">
+                        <img class="brand-logo" src="/static/images/logo.png" alt="SAP Experience logo">
+                    </div>
                     <div>
                         <div class="brand-title">Crew Panel</div>
                         <div class="brand-sub">Flight Operations</div>
@@ -150,6 +152,9 @@
                         <h1> Crew Alert Dashboard</h1>
                     </div>
                     <div class="header-right">
+                        <button class="btn-acknowledge" style="margin-right:10px" @click="logoutCrew">
+                            Sign Out
+                        </button>
                         <div v-if="stats.pending > 0" class="pending-badge">
                             {{ stats.pending }} pending
                         </div>
@@ -162,16 +167,42 @@
                         <div class="video-card-header">
                             <div class="video-card-title"> Live Passenger Monitor</div>
                             <div class="video-controls">
+                                <div class="mqtt-mode-row">
+                                    <button
+                                        :class="['mqtt-mode-btn', !cvNoMqtt ? 'mqtt-mode-active' : '']"
+                                        :disabled="cvEnabled || cvToggling || cvCalibrating"
+                                        @click="cvNoMqtt = false"
+                                        title="Enable MQTT publish for seat emotions"
+                                    >
+                                        MQTT ON
+                                    </button>
+                                    <button
+                                        :class="['mqtt-mode-btn', cvNoMqtt ? 'mqtt-mode-active mqtt-mode-off' : '']"
+                                        :disabled="cvEnabled || cvToggling || cvCalibrating"
+                                        @click="cvNoMqtt = true"
+                                        title="Disable MQTT publish for seat emotions"
+                                    >
+                                        MQTT OFF
+                                    </button>
+                                </div>
                                 <div v-if="cvEnabled" class="live-status">
                                     <div :class="['live-dot', { live: !cvLoading && !cvError }]"></div>
                                     <span>{{ !cvLoading && !cvError ? 'LIVE' : cvError ? 'Disconnected' : 'Connecting' }}</span>
                                 </div>
                                 <button
                                     :class="['cv-toggle-btn', cvEnabled ? 'btn-stop' : 'btn-start']"
-                                    :disabled="cvToggling"
+                                    :disabled="cvToggling || cvCalibrating"
                                     @click="toggleCv"
                                 >
                                     {{ cvToggling ? '' : cvEnabled ? ' Disable CV' : ' Enable CV' }}
+                                </button>
+                                <button
+                                    v-if="cvEnabled"
+                                    class="cv-toggle-btn btn-calibrate"
+                                    :disabled="cvToggling || cvCalibrating"
+                                    @click="calibrateSeats"
+                                >
+                                    {{ cvCalibrating ? ' Calibrating...' : ' Calibrate Seats' }}
                                 </button>
                             </div>
                         </div>
@@ -215,7 +246,7 @@
                             </div>
                             <img
                                 v-if="cvEnabled"
-                                src="/video_feed"
+                                :src="cvStreamUrl"
                                 alt="Live camera feed"
                                 class="video-stream"
                                 :style="{ display: cvError ? 'none' : 'block' }"
@@ -253,14 +284,17 @@
                         <div
                             v-for="alert in filteredAlerts"
                             :key="alert.id"
-                            :class="['alert-card', 'priority-' + alert.priority, { acknowledged: alert.acknowledged }]"
+                            :class="['alert-card', 'priority-' + alert.priority, 'type-' + (alert.serviceType || 'other'), { acknowledged: alert.acknowledged }]"
                         >
                             <div class="alert-card-header">
                                 <div class="alert-meta">
                                     <div class="alert-seat"> Seat {{ alert.seatNumber }}</div>
                                     <div class="alert-type-row">
                                         <span class="alert-type-label">
-                                            {{ getServiceIcon(alert.serviceType) }} {{ capitalizeFirst(alert.serviceType) }}
+                                            {{ getServiceIcon(alert.serviceType, alert.emotion) }} {{ capitalizeFirst(alert.serviceType) }}
+                                        </span>
+                                        <span v-if="alert.serviceType === 'mood'" class="mood-emotion-badge">
+                                            {{ capitalizeFirst(alert.emotion) }} {{ Math.round((alert.confidence || 0) * 100) }}%
                                         </span>
                                         <span
                                             v-if="!alert.acknowledged"
@@ -306,9 +340,12 @@
                 // CV state
                 const cvEnabled  = ref(false);
                 const cvToggling = ref(false);
+                const cvCalibrating = ref(false);
                 const cvLoading  = ref(false);
                 const cvError    = ref(false);
+                const cvNoMqtt   = ref(true);
                 const seatData   = ref(null);
+                const cvStreamNonce = ref(Date.now());
 
                 // System status
                 const systemStats  = ref(null);
@@ -334,11 +371,13 @@
 
                 //  Static data 
                 const categories = [
-                    { key: 'beverage', icon: '', label: 'Beverages' },
-                    { key: 'food',     icon: '', label: 'Food'      },
-                    { key: 'comfort',  icon: '', label: 'Comfort'   },
-                    { key: 'medical',  icon: '', label: 'Medical'   },
-                    { key: 'other',    icon: '', label: 'Other'      },
+                    { key: 'all',      icon: '\uD83D\uDCCB', label: 'All Alerts'   },
+                    { key: 'beverage', icon: '',  label: 'Beverages'   },
+                    { key: 'food',     icon: '',  label: 'Food'        },
+                    { key: 'comfort',  icon: '',  label: 'Comfort'     },
+                    { key: 'medical',  icon: '',  label: 'Medical'     },
+                    { key: 'mood',     icon: '\uD83D\uDE14', label: 'Mood Alerts'  },
+                    { key: 'other',    icon: '',  label: 'Other'       },
                 ];
 
                 const filters = [
@@ -351,7 +390,7 @@
                 const stats = computed(() => {
                     const pending = alerts.value.filter(a => !a.acknowledged).length;
                     const total   = alerts.value.length;
-                    const cats    = { beverage: 0, food: 0, comfort: 0, medical: 0, other: 0, video: 1 };
+                    const cats    = { all: 0, beverage: 0, food: 0, comfort: 0, medical: 0, mood: 0, other: 0, video: 1 };
 
                     alerts.value.filter(a => !a.acknowledged).forEach(a => {
                         const t = a.serviceType?.toLowerCase();
@@ -359,8 +398,12 @@
                         else if (t === 'food')                         cats.food++;
                         else if (['blanket', 'pillow'].includes(t))    cats.comfort++;
                         else if (t === 'medical')                      cats.medical++;
+                        else if (t === 'mood')                         cats.mood++;
                         else                                           cats.other++;
                     });
+
+                    // "All" badge shows total pending count
+                    cats.all = pending;
 
                     return { pending, total, categories: cats };
                 });
@@ -373,6 +416,7 @@
                         list = list.filter(a => {
                             const t = a.serviceType?.toLowerCase();
                             if (selectedCategory.value === 'comfort') return ['blanket', 'pillow'].includes(t);
+                            if (selectedCategory.value === 'mood')    return t === 'mood';
                             return t === selectedCategory.value;
                         });
                     }
@@ -384,7 +428,11 @@
                 });
 
                 //  Helpers 
-                const getServiceIcon = (type) => {
+                const getServiceIcon = (type, emotion) => {
+                    if (type?.toLowerCase() === 'mood') {
+                        const moodIcons = { angry: '\uD83D\uDE20', disgust: '\uD83E\uDD22', fear: '\uD83D\uDE28', sad: '\uD83D\uDE22' };
+                        return moodIcons[emotion?.toLowerCase()] || '\uD83D\uDE14';
+                    }
                     const icons = {
                         beverage: '', food: '', blanket: '', pillow: '',
                         assistance: '', medical: '', entertainment: '', other: ''
@@ -397,6 +445,8 @@
                 const currentSceneColor = computed(() =>
                     lightingScenes.find(s => s.key === lightingScene.value)?.color || '#808080'
                 );
+
+                const cvStreamUrl = computed(() => `/video_feed?ts=${cvStreamNonce.value}`);
 
                 const formatTime = (ts) => {
                     if (!ts) return '';
@@ -449,9 +499,34 @@
                     };
                     wsRef.onclose = () => {
                         isConnected.value = false;
-                        reconnectTimeout = setTimeout(connectWebSocket, 3000);
+                        reconnectTimeout = setTimeout(async () => {
+                            const hasSession = await ensureCrewSession();
+                            if (hasSession) connectWebSocket();
+                        }, 3000);
                     };
                     wsRef.onerror = (e) => { console.error('WebSocket error:', e); };
+                };
+
+                const ensureCrewSession = async () => {
+                    try {
+                        const res = await fetch('/api/crew/session');
+                        if (!res.ok) {
+                            window.location.href = '/crew-dashboard';
+                            return false;
+                        }
+                        return true;
+                    } catch (e) {
+                        window.location.href = '/crew-dashboard';
+                        return false;
+                    }
+                };
+
+                const logoutCrew = async () => {
+                    try {
+                        await fetch('/api/crew/logout', { method: 'POST' });
+                    } finally {
+                        window.location.href = '/crew-dashboard';
+                    }
                 };
 
                 //  Alerts API 
@@ -547,13 +622,23 @@
                                 clearInterval(seatDataInterval);
                             }
                         } else {
-                            const res = await fetch('/api/cv/start', { method: 'POST' });
+                            const res = await fetch('/api/cv/start', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ no_mqtt: cvNoMqtt.value })
+                            });
                             if (res.ok) {
+                                const data = await res.json();
+                                if (typeof data.no_mqtt === 'boolean') {
+                                    cvNoMqtt.value = data.no_mqtt;
+                                }
                                 cvEnabled.value = true;
                                 cvLoading.value = true;
                                 cvError.value   = false;
+                                cvStreamNonce.value = Date.now();
                                 fetchSeatData();
                                 seatDataInterval = setInterval(fetchSeatData, 2000);
+                                showToast(`CV started (MQTT ${cvNoMqtt.value ? 'OFF' : 'ON'})`, 'success', '');
                             } else {
                                 const err = await res.json();
                                 showToast('Failed to start CV: ' + (err.detail || 'Unknown error'), 'error', '');
@@ -564,6 +649,49 @@
                         showToast('CV toggle failed: ' + e.message, 'error', '');
                     } finally {
                         cvToggling.value = false;
+                    }
+                };
+
+                const calibrateSeats = async () => {
+                    if (!cvEnabled.value) {
+                        showToast('Enable CV first before calibration', 'error', '');
+                        return;
+                    }
+
+                    cvCalibrating.value = true;
+                    cvLoading.value = true;
+                    cvError.value = false;
+                    showToast('Calibration window opening on host machine...', 'success', '');
+
+                    try {
+                        const res = await fetch('/api/cv/calibrate', { method: 'POST' });
+                        const payload = await res.json();
+
+                        if (!res.ok) {
+                            showToast('Calibration failed: ' + (payload.detail || 'Unknown error'), 'error', '');
+                            cvLoading.value = false;
+                            return;
+                        }
+
+                        cvEnabled.value = true;
+                        cvStreamNonce.value = Date.now();
+                        fetchSeatData();
+                        clearInterval(seatDataInterval);
+                        seatDataInterval = setInterval(fetchSeatData, 2000);
+
+                        if (payload.status === 'calibrated') {
+                            showToast('Seat calibration saved', 'success', '');
+                        } else if (payload.status === 'cancelled') {
+                            showToast('Calibration cancelled; previous seat map kept', 'error', '');
+                        } else {
+                            showToast(payload.message || 'Calibration completed with warnings', 'error', '');
+                        }
+                    } catch (e) {
+                        console.error('Calibration failed:', e);
+                        showToast('Calibration failed: ' + e.message, 'error', '');
+                        cvLoading.value = false;
+                    } finally {
+                        cvCalibrating.value = false;
                     }
                 };
 
@@ -581,6 +709,9 @@
 
                 //  Lifecycle 
                 onMounted(async () => {
+                    const hasSession = await ensureCrewSession();
+                    if (!hasSession) return;
+
                     connectWebSocket();
                     await loadAlerts();
 
@@ -590,6 +721,9 @@
                         if (res.ok) {
                             const d = await res.json();
                             cvEnabled.value = d.enabled;
+                            if (typeof d.no_mqtt === 'boolean') {
+                                cvNoMqtt.value = d.no_mqtt;
+                            }
                             if (d.enabled) {
                                 cvLoading.value  = true;
                                 fetchSeatData();
@@ -615,14 +749,16 @@
                 return {
                     alerts, currentFilter, selectedCategory,
                     isConnected, toast,
-                    cvEnabled, cvToggling, cvLoading, cvError, seatData,
+                    cvEnabled, cvToggling, cvCalibrating, cvLoading, cvError, seatData, cvStreamUrl,
+                    cvNoMqtt,
                     systemStats, systemHealth,
                     lightingOverride, lightingScene, lightingScenes, currentSceneColor,
                     categories, filters,
                     stats, filteredAlerts,
-                    toggleCv, acknowledgeAlert,
+                    toggleCv, calibrateSeats, acknowledgeAlert,
                     getServiceIcon, capitalizeFirst, formatTime,
                     setLightingMode, selectLightingScene,
+                    logoutCrew,
                 };
             }
         }).mount('#app');

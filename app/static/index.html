@@ -19,7 +19,9 @@
         <!-- Header -->
         <header class="header">
             <div class="header-brand">
-                <div class="header-logo">✈️</div>
+                <div class="header-logo">
+                    <img class="header-logo-img" src="/static/images/logo.png" alt="SAP Experience logo">
+                </div>
                 <div>
                     <div class="header-title">Avia</div>
                     <div class="header-subtitle">Your In-Flight Travel Assistant</div>
@@ -38,7 +40,9 @@
             <div class="messages-area" ref="messagesArea">
                 <!-- Welcome Screen (shown when no messages) -->
                 <div v-if="messages.length === 0" class="welcome-screen">
-                    <div class="welcome-avatar">✈️</div>
+                    <div class="welcome-avatar">
+                        <img class="welcome-logo-img" src="/static/images/logo.png" alt="SAP Experience logo">
+                    </div>
                     <h1 class="welcome-title">Hello! I'm Avia</h1>
                     <p class="welcome-subtitle">
                         Your personal travel assistant. Ask me anything about your destination, 

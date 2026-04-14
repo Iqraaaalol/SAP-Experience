@@ -18,3 +18,9 @@ class CrewAlertRequest(BaseModel):
     serviceType: str
     message: str
     priority: str = "medium"
+
+
+class CrewLoginRequest(BaseModel):
+    """Request model for crew login credentials."""
+    username: str
+    password: str

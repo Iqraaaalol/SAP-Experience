@@ -31,10 +31,12 @@ try:
     import config
     EAR_THRESHOLD = getattr(config, 'EAR_THRESHOLD', 0.25)
     SLEEP_DURATION = getattr(config, 'SLEEP_DURATION', 3.0)
+    FACE_DETECTION_SCALE = float(getattr(config, 'FACE_DETECTION_SCALE', 0.6))
 except ImportError:
     EAR_THRESHOLD = 0.25
     SLEEP_DURATION = 3.0
-
+    FACE_DETECTION_SCALE = 0.6
+    
 # MediaPipe FaceMesh landmark indices for eye contours
 # Left eye (from the subject's perspective)
 LEFT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
@@ -86,9 +88,11 @@ class SleepDetector:
     def __init__(self, ear_threshold=None, sleep_duration=None):
         self.ear_threshold = ear_threshold if ear_threshold is not None else EAR_THRESHOLD
         self.sleep_duration = sleep_duration if sleep_duration is not None else SLEEP_DURATION
+        self.face_detection_scale = max(0.3, min(1.0, FACE_DETECTION_SCALE))
 
         # Per-seat state: seat_id -> timestamp when eyes first closed
         self._eyes_closed_since = {}
+        self._last_full_face_landmarks = None
 
         # Initialize MediaPipe FaceMesh
         self._face_mesh = None
@@ -107,11 +111,14 @@ class SleepDetector:
             # MediaPipe 0.10+ uses tasks API
             base_options = mp_python.BaseOptions(model_asset_path=FACE_LANDMARKER_MODEL_PATH)
             options = vision.FaceLandmarkerOptions(
-                base_options=base_options,
-                num_faces=1,
-                min_face_detection_confidence=0.5,
-                output_face_blendshapes=False,
-                output_facial_transformation_matrixes=False
+                base_options,
+                num_faces = 1,
+                min_face_detection_confidence = 0.05,
+                min_face_presence_confidence = 0.05,
+                min_tracking_confidence = 0.05,
+                output_face_blendshapes = False,
+                output_facial_transformation_matrixes = False,
+                result_callback = None
             )
             self._face_mesh = vision.FaceLandmarker.create_from_options(options)
 
@@ -158,6 +165,25 @@ class SleepDetector:
                 lm = face_landmarks[idx]
                 pts.append(np.array([lm.x * w, lm.y * h]))
             return np.array(pts)
+
+        left_eye = _get_points(LEFT_EYE_INDICES)
+        right_eye = _get_points(RIGHT_EYE_INDICES)
+
+        left_ear = _eye_aspect_ratio(left_eye)
+        right_ear = _eye_aspect_ratio(right_eye)
+
+        return (left_ear + right_ear) / 2.0
+
+    def compute_ear_from_landmarks(self, face_landmarks_mp):
+        """Compute EAR directly from full-frame MediaPipe landmarks (no re-detection)."""
+        if face_landmarks_mp is None:
+            return None
+
+        def _get_points(indices):
+            return np.array([
+                [face_landmarks_mp[i].x, face_landmarks_mp[i].y]
+                for i in indices
+            ])
 
         left_eye = _get_points(LEFT_EYE_INDICES)
         right_eye = _get_points(RIGHT_EYE_INDICES)
@@ -229,6 +255,7 @@ class SleepDetector:
             Mouth right (viewer's right):  61
         """
         if not self.available or frame_bgr is None or frame_bgr.size == 0:
+            self._last_full_face_landmarks = None
             return None, None, None
 
         import cv2
@@ -239,28 +266,48 @@ class SleepDetector:
                 or getattr(self, '_multi_face_max', 0) != max_faces):
             base_options = mp_python.BaseOptions(model_asset_path=FACE_LANDMARKER_MODEL_PATH)
             options = vision.FaceLandmarkerOptions(
-                base_options=base_options,
-                num_faces=max_faces,
-                min_face_detection_confidence=0.5,
-                output_face_blendshapes=False,
-                output_facial_transformation_matrixes=False,
+                base_options,
+                num_faces = max_faces,
+                min_face_detection_confidence = 0.2,
+                min_face_presence_confidence = 0.2,
+                min_tracking_confidence = 0.2,
+                output_face_blendshapes = False,
+                output_facial_transformation_matrixes = False,
+                result_callback = None
             )
             self._multi_face_landmarker = vision.FaceLandmarker.create_from_options(options)
             self._multi_face_max = max_faces
 
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        h, w = frame_bgr.shape[:2]
+
+        # Run face detection on a smaller frame to reduce periodic stalls.
+        scale = self.face_detection_scale
+        detect_frame = frame_bgr
+        if scale < 1.0:
+            detect_w = max(320, int(w * scale))
+            detect_h = max(180, int(h * scale))
+            detect_frame = cv2.resize(frame_bgr, (detect_w, detect_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            detect_w, detect_h = w, h
+
+        rgb = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2RGB)
         mp_image = Image(image_format=ImageFormat.SRGB, data=rgb)
         results = self._multi_face_landmarker.detect(mp_image)
 
         if not results.face_landmarks:
+            self._last_full_face_landmarks = None
             return None, None, None
 
-        h, w = frame_bgr.shape[:2]
+        # Keep full MediaPipe landmarks for optional downstream EAR calculation.
+        self._last_full_face_landmarks = results.face_landmarks
+
+        scale_x = w / float(detect_w)
+        scale_y = h / float(detect_h)
         boxes, probs, landmarks_out = [], [], []
 
         for face_lms in results.face_landmarks:
-            xs = [lm.x * w for lm in face_lms]
-            ys = [lm.y * h for lm in face_lms]
+            xs = [lm.x * detect_w * scale_x for lm in face_lms]
+            ys = [lm.y * detect_h * scale_y for lm in face_lms]
             x1 = max(0, int(min(xs)))
             y1 = max(0, int(min(ys)))
             x2 = min(w, int(max(xs)))
@@ -269,7 +316,7 @@ class SleepDetector:
             probs.append(1.0)
 
             def _avg(indices):
-                pts = np.array([[face_lms[i].x * w, face_lms[i].y * h]
+                pts = np.array([[face_lms[i].x * detect_w * scale_x, face_lms[i].y * detect_h * scale_y]
                                 for i in indices])
                 return pts.mean(axis=0)
 
@@ -302,3 +349,7 @@ class SleepDetector:
             'eyes_closed_since': closed_since,
             'is_tracking': closed_since is not None,
         }
+
+    def get_last_full_face_landmarks(self):
+        """Return full-frame MediaPipe landmarks from the most recent face detection pass."""
+        return self._last_full_face_landmarks

@@ -59,8 +59,24 @@ body {
 }
 
 .brand-icon {
-    font-size: 28px;
-    line-height: 1;
+    width: 48px;
+    height: 48px;
+    border-radius: 13px;
+    background: linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%);
+    box-shadow:
+        0 4px 14px rgba(14, 165, 233, 0.30),
+        0 0 0 3px rgba(14, 165, 233, 0.10);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.brand-logo {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+    filter: brightness(0) invert(1);
 }
 
 .brand-title {
@@ -372,6 +388,33 @@ body {
     border-left-color: var(--muted);
 }
 
+/* Mood / emotion alerts */
+.alert-card.type-mood {
+    border-left-color: #9c27b0;
+    background: rgba(156, 39, 176, 0.10);
+}
+
+.alert-card.type-mood:not(.acknowledged) {
+    animation: slideIn 0.28s ease, moodPulse 3s infinite;
+}
+
+@keyframes moodPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(156, 39, 176, 0.35); }
+    50%       { box-shadow: 0 0 0 7px rgba(156, 39, 176, 0); }
+}
+
+.mood-emotion-badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    background: rgba(156, 39, 176, 0.22);
+    color: #ce93d8;
+    border: 1px solid rgba(156, 39, 176, 0.4);
+    letter-spacing: 0.03em;
+}
+
 @keyframes slideIn {
     from { opacity: 0; transform: translateY(-8px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -504,6 +547,47 @@ body {
     gap: 12px;
 }
 
+.mqtt-mode-row {
+    display: flex;
+    gap: 6px;
+}
+
+.mqtt-mode-btn {
+    padding: 6px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-sub);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+}
+
+.mqtt-mode-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--text);
+}
+
+.mqtt-mode-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.mqtt-mode-btn.mqtt-mode-active {
+    background: rgba(76, 175, 135, 0.2);
+    border-color: rgba(76, 175, 135, 0.45);
+    color: #8be0bf;
+}
+
+.mqtt-mode-btn.mqtt-mode-active.mqtt-mode-off {
+    background: rgba(212, 168, 75, 0.2);
+    border-color: rgba(212, 168, 75, 0.45);
+    color: #f0d08a;
+}
+
 .live-status {
     display: flex;
     align-items: center;
@@ -559,6 +643,15 @@ body {
 
 .btn-stop:hover:not(:disabled) {
     background: #a84339;
+}
+
+.btn-calibrate {
+    background: var(--accent);
+    color: #fff;
+}
+
+.btn-calibrate:hover:not(:disabled) {
+    background: #2559d8;
 }
 
 /*  Seat Grid  */

@@ -8,9 +8,12 @@ A multi-language travel assistant for aircraft passengers with:
 - Crew dashboard with WebSocket alerts
 - Conversation history per seat
 """
+import asyncio
+import json
 import os
+import secrets
 import socket
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 import cv2
 import threading
@@ -18,7 +21,7 @@ import numpy as np
 from pathlib import Path
 import time
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -34,7 +37,7 @@ from services import (
     # Config
     STATIC_DIR, MODEL_NAME, CHROMA_PERSIST_DIR,
     # Models
-    QueryRequest, CrewAlertRequest,
+    QueryRequest, CrewAlertRequest, CrewLoginRequest,
     # Language
     get_language_name, get_service_message, translate_to_english,
     # Services
@@ -42,7 +45,7 @@ from services import (
     build_context_from_chroma, init_chroma_manager, get_chroma_manager,
     init_llm,
     query_cache, conversation_history,
-    init_db, get_stats,
+    init_db, get_stats, verify_crew_credentials,
 )
 
 
@@ -53,6 +56,14 @@ chroma_manager = init_chroma_manager(CHROMA_PERSIST_DIR)
 #============================================================================
 # CV STREAM PROCESSOR
 # =============================================================================
+
+# Mood alert configuration
+_NEGATIVE_EMOTIONS        = {'angry', 'disgust', 'fear', 'sad'}
+_MOOD_ALERT_CONFIDENCE    = 0.80   # minimum confidence to fire an alert
+_MOOD_ALERT_COOLDOWN      = 30.0   # seconds between alerts for the same seat
+
+# Event loop captured when CV starts so the background thread can schedule coroutines
+_app_event_loop = None
 
 # Global variables for video stream
 camera = None
@@ -66,43 +77,117 @@ frame_lock = threading.Lock()
 # In-memory override state — mirrors what has been sent to the Arduino
 _lighting_override: dict = {"enabled": False, "scene": "NEUTRAL"}
 
-_VALID_SCENES = {"HAPPY", "NEUTRAL", "STRESSED", "ANGRY", "SAD", "ANXIOUS"}
+_VALID_SCENES = {"HAPPY", "NEUTRAL", "STRESSED", "ANGRY", "SAD", "ANXIOUS", "SLEEP"}
+
+# Crew auth configuration/state
+CREW_SESSION_COOKIE = "crew_session_token"
+CREW_SESSION_TTL_SECONDS = 8 * 60 * 60
+_crew_sessions: dict = {}
 
 
-def _publish_lighting_override(enabled: bool, scene: str) -> None:
-    """Publish a lighting override command to the Arduino via MQTT."""
-    import json
+def _utcnow() -> datetime:
+    return datetime.utcnow()
+
+
+def _cleanup_expired_crew_sessions() -> None:
+    now = _utcnow()
+    expired_tokens = [
+        token for token, payload in _crew_sessions.items()
+        if payload.get("expires_at") <= now
+    ]
+    for token in expired_tokens:
+        _crew_sessions.pop(token, None)
+
+
+def _create_crew_session(username: str) -> str:
+    _cleanup_expired_crew_sessions()
+    token = secrets.token_urlsafe(32)
+    _crew_sessions[token] = {
+        "username": username,
+        "expires_at": _utcnow() + timedelta(seconds=CREW_SESSION_TTL_SECONDS),
+    }
+    return token
+
+
+def _get_crew_user_from_cookie(request: Request) -> str | None:
+    _cleanup_expired_crew_sessions()
+    token = request.cookies.get(CREW_SESSION_COOKIE)
+    if not token:
+        return None
+    session_payload = _crew_sessions.get(token)
+    if not session_payload:
+        return None
+    return session_payload.get("username")
+
+
+def _get_crew_user_from_websocket(websocket: WebSocket) -> str | None:
+    _cleanup_expired_crew_sessions()
+    token = websocket.cookies.get(CREW_SESSION_COOKIE)
+    if not token:
+        return None
+    session_payload = _crew_sessions.get(token)
+    if not session_payload:
+        return None
+    return session_payload.get("username")
+
+
+async def require_crew_auth(request: Request) -> str:
+    username = _get_crew_user_from_cookie(request)
+    if not username:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Crew authentication required")
+    return username
+
+
+def _do_publish_lighting_override(enabled: bool, scene: str) -> None:
+    """Blocking MQTT publish — runs in a background thread."""
+    import socket as _socket
     try:
         import paho.mqtt.client as paho_mqtt
     except ImportError:
         print("[MQTT] paho-mqtt not installed — override not published to Arduino")
         return
 
-    broker = os.environ.get("MQTT_BROKER_HOST", "10.110.0.13")
-    port   = int(os.environ.get("MQTT_BROKER_PORT", 1883))
-    topic  = "sap/lighting/override"
+    broker  = os.environ.get("MQTT_BROKER_HOST", "192.168.0.100")
+    port    = int(os.environ.get("MQTT_BROKER_PORT", 1883))
+    topic   = "sap/lighting/override"
     payload = json.dumps({"enabled": enabled, "scene": scene})
 
     try:
         client = paho_mqtt.Client(client_id="sap-crew-override")
+        client.connect_timeout = 4          # seconds for TCP + CONNACK
+        client.socket_timeout  = 4          # attribute checked by some versions
         client.connect(broker, port, keepalive=5)
-        client.publish(topic, payload, qos=1)
+        # Loop just long enough to get CONNACK then deliver the message
+        client.loop_start()
+        result = client.publish(topic, payload, qos=1)
+        result.wait_for_publish(timeout=4)  # wait for PUBACK (QoS 1)
+        client.loop_stop()
         client.disconnect()
         print(f"[MQTT] Lighting override published → {payload}")
     except Exception as exc:
         print(f"[MQTT] Lighting override publish failed: {exc}")
 
+
+def _publish_lighting_override(enabled: bool, scene: str) -> None:
+    """Fire-and-forget: publish override in a daemon thread so the API never blocks."""
+    t = threading.Thread(
+        target=_do_publish_lighting_override,
+        args=(enabled, scene),
+        daemon=True,
+    )
+    t.start()
+
 class CVStreamProcessor:
-    def __init__(self, camera_index=0):
+    def __init__(self, camera_index=0, no_mqtt: bool | None = None):
         # Import CV modules
         sys.path.insert(0, str(Path(__file__).parent.parent / "computer-vision"))
-        from mood_detection import FaceDetector
+        import config as cv_config
+        from mood_detection import FaceDetector, MQTTPublisher
         from seat_manager import SeatManager
-        from sleep_detector import SleepDetector
-        from seat_manager import SeatManager
-        
+
         self.detector = FaceDetector()
-        self.sleep_detector = SleepDetector()
+        # Reuse the same SleepDetector instance used by FaceDetector.
+        self.sleep_detector = self.detector.sleep_detector
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
@@ -130,33 +215,28 @@ class CVStreamProcessor:
             print(f"⚠️  No calibration found at {calibration_path}, using default grid")
             self.seat_manager._create_grid_zones()
         
-        # Get actual dimensions
-        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        # Create seat manager and try to load calibration
-        self.seat_manager = SeatManager(
-            self.frame_width, 
-            self.frame_height,
-            auto_load_calibration=False
-        )
-        
-        calibration_path = Path(__file__).parent.parent / "computer-vision" / "seat_calibration.json"
-        if calibration_path.exists():
-            print(f"📍 Loading seat calibration from {calibration_path}")
-            if self.seat_manager.load_calibration(str(calibration_path)):
-                print(f"✅ Seat manager loaded with {len(self.seat_manager.seats)} seats")
-            else:
-                print(f"⚠️  Failed to load calibration, using default grid")
-                self.seat_manager._create_grid_zones()
-        else:
-            print(f"⚠️  No calibration found at {calibration_path}, using default grid")
-            self.seat_manager._create_grid_zones()
-        
-        self.emotion_update_interval = 0.3
+        self.emotion_update_interval = float(getattr(cv_config, 'EMOTION_UPDATE_INTERVAL', 0.6))
+        self.seat_update_interval = float(getattr(cv_config, 'SEAT_UPDATE_INTERVAL', 0.2))
+        self.sleep_check_interval = float(getattr(cv_config, 'SLEEP_CHECK_INTERVAL', 0.6))
+        self.last_seat_update = 0.0
         self.last_emotion_update = time.time()
         self.cached_emotions = {}
-        
+        self.cached_seat_assignments = {}
+        self._last_sleep_check = {}
+        self._mood_cooldowns: dict = {}  # seat_id -> timestamp of last mood alert
+
+        # MQTT publisher — sends seat emotions to Arduino.
+        # Priority: explicit route payload override > env flag > CV config.
+        env_no_mqtt = os.environ.get("CV_NO_MQTT", "").strip().lower() in {"1", "true", "yes", "on"}
+        config_mqtt_enabled = bool(getattr(cv_config, 'MQTT_ENABLED', True))
+        if no_mqtt is None:
+            self.no_mqtt = env_no_mqtt or (not config_mqtt_enabled)
+        else:
+            self.no_mqtt = bool(no_mqtt)
+
+        self.mqtt_publisher = None if self.no_mqtt else MQTTPublisher()
+        print(f"📡 CV MQTT: {'disabled' if self.no_mqtt else 'enabled'}")
+
         self.running = False
         self.thread = None
     
@@ -177,14 +257,23 @@ class CVStreamProcessor:
         current_face_ids = set()
         
         if boxes is not None and len(boxes) > 0:
-            # Update seat assignments (pass frame for embedding extraction)
-            seat_assignments = self.seat_manager.update_seats(boxes, frame, current_time)
-            
-            # Update seat assignments (pass frame for embedding extraction)
-            seat_assignments = self.seat_manager.update_seats(boxes, frame, current_time)
+            cached_face_count = len({idx for idx, _ in self.cached_seat_assignments.values()})
+            should_update_seats = (
+                (current_time - self.last_seat_update) >= self.seat_update_interval
+                or not self.cached_seat_assignments
+                or cached_face_count != len(boxes)
+            )
+
+            if should_update_seats:
+                seat_assignments = self.seat_manager.update_seats(boxes, frame, current_time)
+                self.cached_seat_assignments = seat_assignments
+                self.last_seat_update = current_time
+            else:
+                seat_assignments = self.cached_seat_assignments
             
             # Update emotions if interval passed
             if (current_time - self.last_emotion_update) > self.emotion_update_interval:
+                face_records = []
                 for i, box in enumerate(boxes):
                     x1, y1, x2, y2 = box.astype(int)
                     face_img = frame[max(0, y1):min(frame.shape[0], y2), 
@@ -198,19 +287,66 @@ class CVStreamProcessor:
                         face_landmarks[:, 1] -= y1
                     
                     if face_img.size > 0:
-                        emotion, conf, emotion_probs = self.detector.emotion_detector.detect_emotion(
-                            face_img, face_landmarks
-                        )
-                        face_id = self.get_face_id(box)
-                        self.cached_emotions[face_id] = (emotion, conf)
-                        current_face_ids.add(face_id)
-                        
-                        # Update seat manager with emotion
-                        for seat_id, (assigned_idx, _) in seat_assignments.items():
-                            if assigned_idx == i:
-                                self.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
-                                seat_emotions[seat_id] = (emotion, conf)
+                        # Resolve assigned seat(s) for this face so sleeping can be tracked per seat.
+                        assigned_seats = [
+                            seat_id for seat_id, (assigned_idx, _) in seat_assignments.items()
+                            if assigned_idx == i
+                        ]
+
+                        # Skip expensive mood processing for unassigned faces.
+                        if not assigned_seats:
+                            continue
+
+                        is_sleeping = False
+                        if self.sleep_detector.available and assigned_seats:
+                            should_compute_ear = any(
+                                (current_time - self._last_sleep_check.get(seat_id, 0.0)) >= self.sleep_check_interval
+                                for seat_id in assigned_seats
+                            )
+                            ear = self.sleep_detector.compute_ear(face_img) if should_compute_ear else None
+                            for seat_id in assigned_seats:
+                                if should_compute_ear:
+                                    self._last_sleep_check[seat_id] = current_time
+                                if self.sleep_detector.update(seat_id, ear, current_time):
+                                    is_sleeping = True
+
+                        face_records.append({
+                            'box': box,
+                            'face_img': face_img,
+                            'face_landmarks': face_landmarks,
+                            'assigned_seats': assigned_seats,
+                            'is_sleeping': is_sleeping,
+                        })
+
+                # Run all non-sleeping face crops through one batched model inference.
+                batch_images = [r['face_img'] for r in face_records if not r['is_sleeping']]
+                batch_landmarks = [r['face_landmarks'] for r in face_records if not r['is_sleeping']]
+                batch_results = self.detector.emotion_detector.detect_emotions_batch(batch_images, batch_landmarks)
+
+                batch_result_idx = 0
+                for record in face_records:
+                    if record['is_sleeping']:
+                        emotion, conf, emotion_probs = "sleeping", 1.0, {"sleeping": 1.0}
+                    else:
+                        emotion, conf, emotion_probs = batch_results[batch_result_idx]
+                        batch_result_idx += 1
+
+                    face_id = self.get_face_id(record['box'])
+                    self.cached_emotions[face_id] = (emotion, conf)
+                    current_face_ids.add(face_id)
+
+                    # Update seat manager with emotion
+                    for seat_id in record['assigned_seats']:
+                        self.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
+                        seat_emotions[seat_id] = (emotion, conf)
                 
+                # Publish seat emotions via MQTT
+                if self.mqtt_publisher and seat_emotions:
+                    self.mqtt_publisher.publish_emotions(seat_emotions, current_time)
+
+                # Fire crew alerts for negative emotions above confidence threshold
+                self._check_mood_alerts(seat_emotions, current_time)
+
                 self.last_emotion_update = current_time
             else:
                 # Use cached emotions
@@ -223,12 +359,12 @@ class CVStreamProcessor:
                     seat = self.seat_manager.seats.get(seat_id)
                     if seat and seat.current_emotion:
                         seat_emotions[seat_id] = (seat.current_emotion, seat.current_confidence)
-                
-                # Build seat_emotions from seat manager
-                for seat_id in seat_assignments.keys():
-                    seat = self.seat_manager.seats.get(seat_id)
-                    if seat and seat.current_emotion:
-                        seat_emotions[seat_id] = (seat.current_emotion, seat.current_confidence)
+
+            # Clear sleep tracking for seats that became vacant
+            for seat_id, seat in self.seat_manager.seats.items():
+                if not seat.is_occupied:
+                    self.sleep_detector.reset(seat_id)
+                    self._last_sleep_check.pop(seat_id, None)
             
             # Build emotions list from cache for drawing for drawing
             for box in boxes:
@@ -240,27 +376,15 @@ class CVStreamProcessor:
             
             # Clean up old faces and sleep state
             disappeared_ids = set(self.cached_emotions.keys()) - current_face_ids
-            for old_id in disappeared_ids:
-                self.sleep_detector.reset(old_id)
             self.cached_emotions = {k: v for k, v in self.cached_emotions.items() 
                                    if k in current_face_ids}
         else:
             # No faces detected - update seat manager with empty boxes
             self.seat_manager.update_seats(None, frame, current_time)
-            # No faces detected - update seat manager with empty boxes
-            self.seat_manager.update_seats(None, frame, current_time)
+            self.cached_seat_assignments = {}
             self.cached_emotions.clear()
             self.sleep_detector.reset_all()
-        
-        # Draw detection boxes and seat assignments
-        frame = self.detector.draw_enhanced_boxes(
-            frame, boxes, probs, landmarks, 
-            seat_assignments=seat_assignments,
-            emotions=seat_emotions
-        )
-        
-        # Draw seat zones overlay
-        frame = self.seat_manager.draw_seat_zones(frame)
+            self._last_sleep_check.clear()
         
         # Draw detection boxes and seat assignments
         frame = self.detector.draw_enhanced_boxes(
@@ -297,6 +421,33 @@ class CVStreamProcessor:
             # Small sleep to prevent CPU overload
             time.sleep(0.01)
     
+    def _check_mood_alerts(self, seat_emotions: dict, current_time: float):
+        """Broadcast a crew alert when a negative emotion is detected above the confidence threshold."""
+        global _app_event_loop
+        if _app_event_loop is None:
+            return
+        for seat_id, (emotion, conf) in seat_emotions.items():
+            if emotion not in _NEGATIVE_EMOTIONS:
+                continue
+            if conf < _MOOD_ALERT_CONFIDENCE:
+                continue
+            # Respect per-seat cooldown to avoid alert spam
+            last_alert = self._mood_cooldowns.get(seat_id, 0.0)
+            if (current_time - last_alert) < _MOOD_ALERT_COOLDOWN:
+                continue
+            self._mood_cooldowns[seat_id] = current_time
+            alert = {
+                'seatNumber':  seat_id,
+                'serviceType': 'mood',
+                'emotion':     emotion,
+                'confidence':  round(conf, 3),
+                'message':     f"Detected {emotion} emotion ({round(conf * 100)}% confidence)",
+                'priority':    'high',
+                'timestamp':   datetime.now().isoformat(),
+            }
+            asyncio.run_coroutine_threadsafe(crew_manager.broadcast(alert), _app_event_loop)
+            print(f"\U0001f62f Mood alert: seat {seat_id} \u2014 {emotion} ({round(conf * 100)}%)")
+
     def start(self):
         """Start the capture thread"""
         self.running = True
@@ -310,6 +461,8 @@ class CVStreamProcessor:
         if self.thread:
             self.thread.join()
         self.cap.release()
+        if self.mqtt_publisher:
+            self.mqtt_publisher.stop()
         print("📹 CV Stream Processor stopped")
 
 
@@ -368,8 +521,8 @@ async def lifespan(app: FastAPI):
     print(f"\n{'='*60}")
     print(f"🚀 Travel Assistant Started!")
     print(f"{'='*60}")
-    print(f"📍 Local Access:    http://localhost:8000")
-    print(f"🌐 Network Access:  http://{local_ip}:8000")
+    print(f"Passenger Interface: https://{local_ip}:8000")
+    print(f"Crew Dashboard: https://{local_ip}:8000/crew-dashboard")
     print(f"📁 Static Files:    {STATIC_DIR}")
     print(f"📷 Computer Vision: disabled at startup (enable from Crew Dashboard)")
     print(f"{'='*60}\n")
@@ -415,12 +568,59 @@ async def read_root():
 
 
 @app.get("/crew-dashboard")
-async def crew_dashboard():
-    """Serve crew dashboard HTML."""
+async def crew_dashboard(request: Request):
+    """Serve crew login or dashboard page depending on auth state."""
+    if not _get_crew_user_from_cookie(request):
+        login_path = os.path.join(STATIC_DIR, "crew-login.html")
+        if os.path.exists(login_path):
+            return FileResponse(login_path)
+        return {"message": "Crew login page not found. Create crew-login.html in static directory"}
+
     dashboard_path = os.path.join(STATIC_DIR, "crew-dashboard.html")
     if os.path.exists(dashboard_path):
         return FileResponse(dashboard_path)
     return {"message": "Crew dashboard not found. Create crew-dashboard.html in static directory"}
+
+
+@app.post("/api/crew/login")
+async def crew_login(payload: CrewLoginRequest, request: Request, response: Response):
+    """Authenticate crew member and create an HTTP-only session cookie."""
+    username = payload.username.strip()
+    password = payload.password
+
+    if not username or not password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username and password are required")
+
+    is_valid = await verify_crew_credentials(username, password)
+    if not is_valid:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+
+    token = _create_crew_session(username)
+    response.set_cookie(
+        key=CREW_SESSION_COOKIE,
+        value=token,
+        max_age=CREW_SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+    return {"status": "success", "username": username}
+
+
+@app.post("/api/crew/logout")
+async def crew_logout(request: Request, response: Response):
+    """Terminate the crew dashboard session."""
+    token = request.cookies.get(CREW_SESSION_COOKIE)
+    if token:
+        _crew_sessions.pop(token, None)
+    response.delete_cookie(CREW_SESSION_COOKIE)
+    return {"status": "success"}
+
+
+@app.get("/api/crew/session")
+async def crew_session(username: str = Depends(require_crew_auth)):
+    """Return current authenticated crew member."""
+    return {"authenticated": True, "username": username}
 
 
 # =============================================================================
@@ -569,7 +769,7 @@ async def crew_request(request: QueryRequest):
 
 
 @app.get("/api/stats")
-async def get_statistics():
+async def get_statistics(_crew_user: str = Depends(require_crew_auth)):
     """Get system statistics."""
     db_stats = await get_stats()
     
@@ -629,6 +829,10 @@ async def clear_all_conversations():
 @app.websocket("/ws/crew")
 async def crew_websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for crew dashboard."""
+    if not _get_crew_user_from_websocket(websocket):
+        await websocket.close(code=1008, reason="Crew authentication required")
+        return
+
     await crew_manager.connect(websocket)
     try:
         while True:
@@ -639,13 +843,13 @@ async def crew_websocket_endpoint(websocket: WebSocket):
 
 
 @app.get("/api/crew/alerts")
-async def get_crew_alerts():
+async def get_crew_alerts(_crew_user: str = Depends(require_crew_auth)):
     """Get all stored crew alerts."""
     return crew_manager.get_alerts()
 
 
 @app.post("/api/crew/acknowledge")
-async def acknowledge_crew_alert(request: dict):
+async def acknowledge_crew_alert(request: dict, _crew_user: str = Depends(require_crew_auth)):
     """Acknowledge a crew alert."""
     alert_id = request.get('alertId')
     if alert_id is not None:
@@ -657,7 +861,7 @@ async def acknowledge_crew_alert(request: dict):
 
 
 @app.delete("/api/crew/alerts")
-async def clear_crew_alerts(acknowledged_only: bool = True):
+async def clear_crew_alerts(acknowledged_only: bool = True, _crew_user: str = Depends(require_crew_auth)):
     """Clear crew alerts. By default only clears acknowledged alerts."""
     if acknowledged_only:
         count = crew_manager.clear_acknowledged()
@@ -668,7 +872,7 @@ async def clear_crew_alerts(acknowledged_only: bool = True):
 
 
 @app.get("/api/seats")
-async def get_seat_status():
+async def get_seat_status(_crew_user: str = Depends(require_crew_auth)):
     """Get seat calibration data and current seat status."""
     if camera is None or not hasattr(camera, 'seat_manager'):
         return {
@@ -702,16 +906,27 @@ async def get_seat_status():
 # =============================================================================
 
 @app.post("/api/cv/start")
-async def start_cv():
+async def start_cv(payload: dict | None = None, _crew_user: str = Depends(require_crew_auth)):
     """Start the CV stream processor (called from Crew Dashboard)."""
-    global camera
+    global camera, _app_event_loop
+    _app_event_loop = asyncio.get_event_loop()
     if camera is not None and camera.running:
         return {"status": "already_running", "message": "CV stream is already active"}
+
+    no_mqtt_override = None
+    if isinstance(payload, dict) and "no_mqtt" in payload:
+        no_mqtt_override = bool(payload.get("no_mqtt"))
+
     try:
-        camera = CVStreamProcessor(camera_index=0)
+        camera = CVStreamProcessor(camera_index=0, no_mqtt=no_mqtt_override)
         camera.start()
-        print("📹 CV Stream started from Crew Dashboard")
-        return {"status": "started", "message": "CV stream started"}
+        print(f"📹 CV Stream started from Crew Dashboard (no_mqtt={camera.no_mqtt})")
+        return {
+            "status": "started",
+            "message": "CV stream started",
+            "no_mqtt": camera.no_mqtt,
+            "mqtt_enabled": not camera.no_mqtt,
+        }
     except Exception as e:
         camera = None
         print(f"⚠️  CV Stream failed to start: {e}")
@@ -719,7 +934,7 @@ async def start_cv():
 
 
 @app.post("/api/cv/stop")
-async def stop_cv():
+async def stop_cv(_crew_user: str = Depends(require_crew_auth)):
     """Stop the CV stream processor (called from Crew Dashboard)."""
     global camera
     if camera is None:
@@ -734,12 +949,85 @@ async def stop_cv():
         raise HTTPException(status_code=500, detail=f"Failed to stop CV stream: {e}")
 
 
+@app.post("/api/cv/calibrate")
+async def calibrate_cv(_crew_user: str = Depends(require_crew_auth)):
+    """Run interactive seat calibration, then restart CV stream with updated zones."""
+    global camera, current_frame, _app_event_loop
+
+    if camera is None or not camera.running:
+        raise HTTPException(status_code=400, detail="CV stream must be running before calibration")
+
+    frame_width = int(getattr(camera, "frame_width", 1280))
+    frame_height = int(getattr(camera, "frame_height", 720))
+    no_mqtt_mode = bool(getattr(camera, "no_mqtt", False))
+    num_seats = 4
+    if hasattr(camera, "seat_manager") and getattr(camera.seat_manager, "seats", None):
+        num_seats = max(1, len(camera.seat_manager.seats))
+
+    try:
+        camera.stop()
+        camera = None
+        with frame_lock:
+            current_frame = None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop CV stream for calibration: {e}")
+
+    cv_dir = Path(__file__).parent.parent / "computer-vision"
+    if str(cv_dir) not in sys.path:
+        sys.path.insert(0, str(cv_dir))
+
+    calibration_error = None
+    calibration_saved = False
+    try:
+        run_calibration = __import__("mood_detection", fromlist=["run_calibration"]).run_calibration
+        calibration_saved = await asyncio.to_thread(
+            run_calibration,
+            "0",
+            frame_width,
+            frame_height,
+            num_seats,
+        )
+    except Exception as e:
+        calibration_error = str(e)
+
+    restart_error = None
+    try:
+        camera = CVStreamProcessor(camera_index=0, no_mqtt=no_mqtt_mode)
+        camera.start()
+        _app_event_loop = asyncio.get_running_loop()
+    except Exception as e:
+        camera = None
+        restart_error = str(e)
+
+    if restart_error:
+        raise HTTPException(status_code=500, detail=f"Calibration finished but failed to restart CV stream: {restart_error}")
+
+    if calibration_saved:
+        return {
+            "status": "calibrated",
+            "message": "Seat calibration saved and CV stream restarted"
+        }
+
+    if calibration_error:
+        return {
+            "status": "failed",
+            "message": f"Calibration failed: {calibration_error}. CV stream was restarted with previous calibration."
+        }
+
+    return {
+        "status": "cancelled",
+        "message": "Calibration cancelled. CV stream restarted with previous calibration."
+    }
+
+
 @app.get("/api/cv/status")
-async def cv_status():
+async def cv_status(_crew_user: str = Depends(require_crew_auth)):
     """Get current CV stream status."""
     return {
         "enabled": camera is not None and camera.running,
-        "message": "CV stream active" if (camera is not None and camera.running) else "CV stream inactive"
+        "message": "CV stream active" if (camera is not None and camera.running) else "CV stream inactive",
+        "no_mqtt": bool(getattr(camera, "no_mqtt", False)) if camera is not None else None,
+        "mqtt_enabled": (not bool(getattr(camera, "no_mqtt", False))) if camera is not None else None,
     }
 
 
@@ -748,13 +1036,13 @@ async def cv_status():
 # =============================================================================
 
 @app.get("/api/lighting/override")
-async def get_lighting_override():
+async def get_lighting_override(_crew_user: str = Depends(require_crew_auth)):
     """Return the current lighting override state."""
     return _lighting_override
 
 
 @app.post("/api/lighting/override")
-async def set_lighting_override(payload: dict):
+async def set_lighting_override(payload: dict, _crew_user: str = Depends(require_crew_auth)):
     """Set the lighting override state and publish to MQTT.
 
     Body: {"enabled": bool, "scene": "HAPPY" | "NEUTRAL" | "STRESSED" | "ANGRY" | "SAD" | "ANXIOUS"}
@@ -770,7 +1058,7 @@ async def set_lighting_override(payload: dict):
 
 
 @app.get("/video_feed")
-async def video_feed():
+async def video_feed(_crew_user: str = Depends(require_crew_auth)):
     """Video streaming route for CV emotion detection. Returns MJPEG stream."""
     if camera is None:
         raise HTTPException(status_code=503, detail="Camera not available")

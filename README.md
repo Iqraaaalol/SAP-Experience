@@ -37,6 +37,8 @@ ollama serve or have app open
 
 2. Access the local passenger interface: "localhost:8000"
    Access the crew dashboard with: "localhost:8000/crew-dashboard"
+   Crew login (default): username "admin" / password "admin"
 
 3. Access through network local passenger interface: "{Your_IP_here}:8000"
    Access through network crew dashboard with: "{Your_IP_here}:8000/crew-dashboard"
+   Crew login (default): username "admin" / password "admin"

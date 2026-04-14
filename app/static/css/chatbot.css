@@ -81,6 +81,12 @@ body {
     font-size: 20px;
 }
 
+.header-logo-img {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+}
+
 .header-title {
     font-size: 18px;
     font-weight: 600;
@@ -185,6 +191,12 @@ body {
     font-size: 36px;
     margin-bottom: 20px;
     box-shadow: 0 8px 32px rgba(99, 102, 241, 0.3);
+}
+
+.welcome-logo-img {
+    width: 58px;
+    height: 58px;
+    object-fit: contain;
 }
 
 .welcome-title {

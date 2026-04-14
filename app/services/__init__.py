@@ -6,7 +6,7 @@ from .config import (
     CHROMA_PERSIST_DIR, EMBEDDING_MODEL, CHROMA_COLLECTION_NAME,
     STATIC_DIR
 )
-from .models import QueryRequest, CrewAlertRequest
+from .models import QueryRequest, CrewAlertRequest, CrewLoginRequest
 from .language import (
     LANGUAGE_NAMES, SERVICE_MESSAGES, 
     get_language_name, get_service_message, translate_to_english, translate_to_language
@@ -18,7 +18,7 @@ from .chroma_service import (
 )
 from .llm_service import LlamaInterface, init_llm
 from .cache import QueryCache, ConversationHistory, query_cache, conversation_history
-from .database import init_db, get_stats, log_query, log_conversation_message
+from .database import init_db, get_stats, log_query, log_conversation_message, verify_crew_credentials
 
 __all__ = [
     # Config
@@ -26,7 +26,7 @@ __all__ = [
     'CHROMA_PERSIST_DIR', 'EMBEDDING_MODEL', 'CHROMA_COLLECTION_NAME',
     'STATIC_DIR',
     # Models
-    'QueryRequest', 'CrewAlertRequest',
+    'QueryRequest', 'CrewAlertRequest', 'CrewLoginRequest',
     # Language
     'LANGUAGE_NAMES', 'SERVICE_MESSAGES',
     'get_language_name', 'get_service_message', 'translate_to_english', 'translate_to_language',
@@ -40,5 +40,5 @@ __all__ = [
     # Cache
     'QueryCache', 'ConversationHistory', 'query_cache', 'conversation_history',
     # Database
-    'init_db', 'get_stats', 'log_query', 'log_conversation_message',
+    'init_db', 'get_stats', 'log_query', 'log_conversation_message', 'verify_crew_credentials',
 ]
