@@ -23,11 +23,17 @@
                     <img class="header-logo-img" src="/static/images/logo.png" alt="SAP Experience logo">
                 </div>
                 <div>
-                    <div class="header-title">Avia</div>
-                    <div class="header-subtitle">Your In-Flight Travel Assistant</div>
+                    <div class="header-title">{{ t('headerTitle') }}</div>
+                    <div class="header-subtitle">{{ t('headerSubtitle') }}</div>
                 </div>
             </div>
             <div class="header-settings">
+                <button class="settings-btn" @click="downloadChat" :title="t('btnDownload')">
+                    📥
+                </button>
+                <button class="settings-btn" @click="showQr = !showQr" :title="t('btnPhone')">
+                    📱
+                </button>
                 <button class="settings-btn" @click="showSettings = !showSettings">
                     ⚙️ <span>{{ seatNumber }}</span>
                 </button>
@@ -43,23 +49,22 @@
                     <div class="welcome-avatar">
                         <img class="welcome-logo-img" src="/static/images/logo.png" alt="SAP Experience logo">
                     </div>
-                    <h1 class="welcome-title">Hello! I'm Avia</h1>
+                    <h1 class="welcome-title">{{ t('welcomeTitle') }}</h1>
                     <p class="welcome-subtitle">
-                        Your personal travel assistant. Ask me anything about your destination, 
-                        request in-flight services, or get travel tips in your preferred language.
+                        {{ t('welcomeSubtitle') }}
                     </p>
                     <div class="quick-prompts">
-                        <button class="quick-prompt" @click="sendQuickPrompt(quickPrompts.attractions)">
-                            🏛️ {{ quickPrompts.attractions }}
+                        <button class="quick-prompt" @click="sendQuickPrompt(t('promptAttractions'))">
+                            🏛️ {{ t('promptAttractions') }}
                         </button>
-                        <button class="quick-prompt" @click="sendQuickPrompt(quickPrompts.cuisine)">
-                            🍜 {{ quickPrompts.cuisine }}
+                        <button class="quick-prompt" @click="sendQuickPrompt(t('promptCuisine'))">
+                            🍜 {{ t('promptCuisine') }}
                         </button>
-                        <button class="quick-prompt" @click="sendQuickPrompt(quickPrompts.water)">
-                            💧 {{ quickPrompts.water }}
+                        <button class="quick-prompt" @click="sendQuickPrompt(t('promptWater'))">
+                            💧 {{ t('promptWater') }}
                         </button>
-                        <button class="quick-prompt" @click="sendQuickPrompt(quickPrompts.weather)">
-                            🌤️ {{ quickPrompts.weather }}
+                        <button class="quick-prompt" @click="sendQuickPrompt(t('promptWeather'))">
+                            🌤️ {{ t('promptWeather') }}
                         </button>
                     </div>
                 </div>
@@ -74,10 +79,10 @@
                             <div class="message-content" v-html="msg.html || msg.content"></div>
                             <div class="message-meta">
                                 <span>{{ formatTime(msg.timestamp) }}</span>
-                                <span v-if="msg.fromCache">⚡ Cached</span>
+                                <span v-if="msg.fromCache">⚡ {{ t('labelCached') }}</span>
                             </div>
                             <div v-if="msg.serviceAlert" class="service-badge">
-                                ✅ Crew notified
+                                ✅ {{ t('labelCrewNotified') }}
                             </div>
                         </div>
                     </div>
@@ -102,7 +107,7 @@
                         <input 
                             type="text" 
                             v-model="destination" 
-                            placeholder="Destination"
+                            :placeholder="t('placeholderDest')"
                             style="width: 80px;"
                         >
                     </div>
@@ -124,8 +129,8 @@
                         <textarea 
                             ref="inputField"
                             v-model="inputText"
-                            @keydown.enter.exact.prevent="sendMessage"
-                            placeholder="Ask me anything..."
+                            @keydown.enter.exact.prevent="sendMessage()"
+                            :placeholder="t('placeholderAsk')"
                             rows="1"
                             @input="autoResize"
                         ></textarea>
@@ -134,16 +139,16 @@
                             class="mic-btn" 
                             :class="{ recording: isListening }"
                             @click="toggleSpeech"
-                            :title="isListening ? 'Stop recording' : 'Voice input'"
+                            :title="isListening ? t('micStop') : t('micStart')"
                         >
                             {{ isListening ? '⏹️' : '🎤' }}
                         </button>
                     </div>
                     <button 
                         class="send-btn" 
-                        @click="sendMessage"
+                        @click="sendMessage()"
                         :disabled="!canSend"
-                        title="Send message"
+                        :title="t('btnSend')"
                     >
                         ➤
                     </button>
@@ -155,19 +160,19 @@
         <div v-if="showSettings" class="backdrop" @click="showSettings = false"></div>
         <div class="settings-panel" :class="{ open: showSettings }">
             <div class="settings-header">
-                <span class="settings-title">Settings</span>
+                <span class="settings-title">{{ t('settingsTitle') }}</span>
                 <button class="settings-close" @click="showSettings = false">✕</button>
             </div>
             <div class="settings-group">
-                <div class="settings-label">Seat Number</div>
-                <input class="settings-input" type="text" v-model="seatNumber" placeholder="e.g., 12A">
+                <div class="settings-label">{{ t('settingsSeat') }}</div>
+                <input class="settings-input" type="text" v-model="seatNumber" :placeholder="t('placeholderSeat')">
             </div>
             <div class="settings-group">
-                <div class="settings-label">Destination</div>
-                <input class="settings-input" type="text" v-model="destination" placeholder="e.g., Dubai">
+                <div class="settings-label">{{ t('settingsDest') }}</div>
+                <input class="settings-input" type="text" v-model="destination" :placeholder="t('placeholderDestSettings')">
             </div>
             <div class="settings-group">
-                <div class="settings-label">Language</div>
+                <div class="settings-label">{{ t('settingsLang') }}</div>
                 <select class="settings-input" v-model="language">
                     <option value="en">English</option>
                     <option value="es">Spanish</option>
@@ -180,9 +185,20 @@
             </div>
             <div class="settings-group" style="margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border);">
                 <button class="settings-btn" style="width: 100%; justify-content: center;" @click="clearChat">
-                    🗑️ Clear Conversation
+                    🗑️ {{ t('btnClearChat') }}
                 </button>
             </div>
+        </div>
+
+        <!-- QR Code Modal -->
+        <div v-if="showQr" class="backdrop" @click="showQr = false"></div>
+        <div class="qr-modal" :class="{ open: showQr }">
+            <div class="qr-modal-header">
+                <span class="qr-modal-title">📱 {{ t('qrTitle') }}</span>
+                <button class="settings-close" @click="showQr = false">✕</button>
+            </div>
+            <p class="qr-modal-text">{{ t('qrText') }}</p>
+            <img class="qr-modal-img" src="/static/images/avia_qr.jpg" alt="QR Code">
         </div>
 
         <!-- Toast -->
@@ -195,19 +211,19 @@
         <div v-if="showServiceConfirm" class="backdrop" @click="cancelServiceRequest"></div>
         <div class="service-confirm" :class="{ open: showServiceConfirm }">
             <div class="service-confirm-icon">🔔</div>
-            <h3 class="service-confirm-title">Service Request Detected</h3>
+            <h3 class="service-confirm-title">{{ t('svcTitle') }}</h3>
             <p class="service-confirm-text">
-                Would you like to notify the crew about your request?
+                {{ t('svcText') }}
             </p>
             <div class="service-confirm-details" v-if="pendingService">
                 <strong>{{ pendingService.serviceType }}</strong>
             </div>
             <div class="service-confirm-actions">
                 <button class="service-confirm-btn cancel" @click="cancelServiceRequest">
-                    ✕ Just Answer
+                    {{ t('btnNo') }}
                 </button>
                 <button class="service-confirm-btn confirm" @click="confirmServiceRequest">
-                    ✓ Notify Crew
+                    {{ t('btnYes') }}
                 </button>
             </div>
         </div>
@@ -227,6 +243,311 @@
             'th': 'th-TH'
         };
 
+        // UI translation dictionaries
+        const TRANSLATIONS = {
+            en: {
+                pageTitle: 'Avia - Your Travel Assistant',
+                headerTitle: 'Avia',
+                headerSubtitle: 'Your In-Flight Travel Assistant',
+                btnDownload: 'Download conversation',
+                btnPhone: 'Open on phone',
+                welcomeTitle: "Hello! I'm Avia",
+                welcomeSubtitle: 'Your personal travel assistant. Ask me anything about your destination, request in-flight services, or get travel tips in your preferred language.',
+                promptAttractions: 'What are the top attractions?',
+                promptCuisine: 'What local food should I try?',
+                promptWater: 'Can I get some water please?',
+                promptWeather: "What's the weather like?",
+                placeholderDest: 'Destination',
+                placeholderAsk: 'Ask me anything...',
+                placeholderSeat: 'e.g., 12A',
+                placeholderDestSettings: 'e.g., Dubai',
+                labelCached: 'Cached',
+                labelCrewNotified: 'Crew notified',
+                settingsTitle: 'Settings',
+                settingsSeat: 'Seat Number',
+                settingsDest: 'Destination',
+                settingsLang: 'Language',
+                btnClearChat: 'Clear Conversation',
+                qrTitle: 'Continue on your phone',
+                qrText: 'Scan this QR code to open the chat on your mobile device.',
+                svcTitle: 'Service Request Detected',
+                svcText: 'Would you like to notify the crew about your request?',
+                btnNo: '✕ No',
+                btnYes: '✓ Yes',
+                toastCleared: 'Conversation cleared',
+                toastClearFail: 'Failed to clear conversation',
+                toastDownloaded: 'Chat downloaded',
+                toastNoMessages: 'No messages to download',
+                toastCrewNotified: 'Crew has been notified!',
+                toastSvcFail: 'Failed to send service request.',
+                toastFetchFail: 'Failed to get response. Please try again.',
+                toastFetchFailShort: 'Failed to get response.',
+                errGeneric: 'Sorry, I encountered an error. Please try again.',
+                rephraseMsg: 'Can you rephrase your question and be more specific?',
+                micStop: 'Stop recording',
+                micStart: 'Voice input',
+                btnSend: 'Send message',
+            },
+            es: {
+                pageTitle: 'Avia - Tu Asistente de Viaje',
+                headerTitle: 'Avia',
+                headerSubtitle: 'Tu Asistente de Vuelo',
+                btnDownload: 'Descargar conversación',
+                btnPhone: 'Abrir en el teléfono',
+                welcomeTitle: '¡Hola! Soy Avia',
+                welcomeSubtitle: 'Tu asistente de viaje personal. Pregúntame cualquier cosa sobre tu destino, solicita servicios a bordo u obtén consejos de viaje en tu idioma preferido.',
+                promptAttractions: '¿Cuáles son las principales atracciones?',
+                promptCuisine: '¿Qué comida local debo probar?',
+                promptWater: '¿Me puede traer agua por favor?',
+                promptWeather: '¿Cómo está el clima?',
+                placeholderDest: 'Destino',
+                placeholderAsk: 'Pregúntame cualquier cosa...',
+                placeholderSeat: 'ej., 12A',
+                placeholderDestSettings: 'ej., Dubái',
+                labelCached: 'En caché',
+                labelCrewNotified: 'Tripulación notificada',
+                settingsTitle: 'Configuración',
+                settingsSeat: 'Número de asiento',
+                settingsDest: 'Destino',
+                settingsLang: 'Idioma',
+                btnClearChat: 'Borrar conversación',
+                qrTitle: 'Continuar en tu teléfono',
+                qrText: 'Escanea este código QR para abrir el chat en tu dispositivo móvil.',
+                svcTitle: 'Solicitud de servicio detectada',
+                svcText: '¿Deseas notificar a la tripulación sobre tu solicitud?',
+                btnNo: '✕ No',
+                btnYes: '✓ Sí',
+                toastCleared: 'Conversación borrada',
+                toastClearFail: 'No se pudo borrar la conversación',
+                toastDownloaded: 'Chat descargado',
+                toastNoMessages: 'No hay mensajes para descargar',
+                toastCrewNotified: '¡La tripulación ha sido notificada!',
+                toastSvcFail: 'No se pudo enviar la solicitud de servicio.',
+                toastFetchFail: 'No se pudo obtener respuesta. Inténtalo de nuevo.',
+                toastFetchFailShort: 'No se pudo obtener respuesta.',
+                errGeneric: 'Lo siento, encontré un error. Por favor, inténtalo de nuevo.',
+                rephraseMsg: '¿Puedes reformular tu pregunta y ser más específico?',
+                micStop: 'Detener grabación',
+                micStart: 'Entrada de voz',
+                btnSend: 'Enviar mensaje',
+            },
+            fr: {
+                pageTitle: 'Avia - Votre Assistant de Voyage',
+                headerTitle: 'Avia',
+                headerSubtitle: 'Votre Assistant de Vol',
+                btnDownload: 'Télécharger la conversation',
+                btnPhone: 'Ouvrir sur téléphone',
+                welcomeTitle: 'Bonjour ! Je suis Avia',
+                welcomeSubtitle: 'Votre assistant de voyage personnel. Posez-moi des questions sur votre destination, demandez des services en vol ou obtenez des conseils de voyage dans votre langue préférée.',
+                promptAttractions: 'Quelles sont les principales attractions ?',
+                promptCuisine: 'Quelle cuisine locale dois-je essayer ?',
+                promptWater: 'Puis-je avoir de l\'eau s\'il vous plaît ?',
+                promptWeather: 'Quel temps fait-il ?',
+                placeholderDest: 'Destination',
+                placeholderAsk: 'Posez-moi une question...',
+                placeholderSeat: 'ex., 12A',
+                placeholderDestSettings: 'ex., Dubaï',
+                labelCached: 'En cache',
+                labelCrewNotified: 'Équipage notifié',
+                settingsTitle: 'Paramètres',
+                settingsSeat: 'Numéro de siège',
+                settingsDest: 'Destination',
+                settingsLang: 'Langue',
+                btnClearChat: 'Effacer la conversation',
+                qrTitle: 'Continuer sur votre téléphone',
+                qrText: 'Scannez ce code QR pour ouvrir le chat sur votre appareil mobile.',
+                svcTitle: 'Demande de service détectée',
+                svcText: 'Souhaitez-vous notifier l\'équipage de votre demande ?',
+                btnNo: '✕ Non',
+                btnYes: '✓ Oui',
+                toastCleared: 'Conversation effacée',
+                toastClearFail: 'Impossible d\'effacer la conversation',
+                toastDownloaded: 'Chat téléchargé',
+                toastNoMessages: 'Aucun message à télécharger',
+                toastCrewNotified: 'L\'équipage a été notifié !',
+                toastSvcFail: 'Impossible d\'envoyer la demande de service.',
+                toastFetchFail: 'Impossible d\'obtenir une réponse. Veuillez réessayer.',
+                toastFetchFailShort: 'Impossible d\'obtenir une réponse.',
+                errGeneric: 'Désolé, j\'ai rencontré une erreur. Veuillez réessayer.',
+                rephraseMsg: 'Pouvez-vous reformuler votre question et être plus précis ?',
+                micStop: 'Arrêter l\'enregistrement',
+                micStart: 'Entrée vocale',
+                btnSend: 'Envoyer le message',
+            },
+            de: {
+                pageTitle: 'Avia - Ihr Reiseassistent',
+                headerTitle: 'Avia',
+                headerSubtitle: 'Ihr Bordassistent',
+                btnDownload: 'Gespräch herunterladen',
+                btnPhone: 'Auf dem Telefon öffnen',
+                welcomeTitle: 'Hallo! Ich bin Avia',
+                welcomeSubtitle: 'Ihr persönlicher Reiseassistent. Fragen Sie mich alles über Ihr Reiseziel, fordern Sie Bordservices an oder erhalten Sie Reisetipps in Ihrer bevorzugten Sprache.',
+                promptAttractions: 'Was sind die wichtigsten Sehenswürdigkeiten?',
+                promptCuisine: 'Welches lokale Essen sollte ich probieren?',
+                promptWater: 'Kann ich bitte etwas Wasser bekommen?',
+                promptWeather: 'Wie ist das Wetter?',
+                placeholderDest: 'Reiseziel',
+                placeholderAsk: 'Fragen Sie mich alles...',
+                placeholderSeat: 'z.B., 12A',
+                placeholderDestSettings: 'z.B., Dubai',
+                labelCached: 'Gecacht',
+                labelCrewNotified: 'Crew benachrichtigt',
+                settingsTitle: 'Einstellungen',
+                settingsSeat: 'Sitznummer',
+                settingsDest: 'Reiseziel',
+                settingsLang: 'Sprache',
+                btnClearChat: 'Gespräch löschen',
+                qrTitle: 'Auf Ihrem Telefon fortsetzen',
+                qrText: 'Scannen Sie diesen QR-Code, um den Chat auf Ihrem Mobilgerät zu öffnen.',
+                svcTitle: 'Serviceanfrage erkannt',
+                svcText: 'Möchten Sie die Besatzung über Ihre Anfrage informieren?',
+                btnNo: '✕ Nein',
+                btnYes: '✓ Ja',
+                toastCleared: 'Gespräch gelöscht',
+                toastClearFail: 'Gespräch konnte nicht gelöscht werden',
+                toastDownloaded: 'Chat heruntergeladen',
+                toastNoMessages: 'Keine Nachrichten zum Herunterladen',
+                toastCrewNotified: 'Die Crew wurde benachrichtigt!',
+                toastSvcFail: 'Serviceanfrage konnte nicht gesendet werden.',
+                toastFetchFail: 'Antwort konnte nicht abgerufen werden. Bitte versuchen Sie es erneut.',
+                toastFetchFailShort: 'Antwort konnte nicht abgerufen werden.',
+                errGeneric: 'Entschuldigung, ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.',
+                rephraseMsg: 'Können Sie Ihre Frage umformulieren und spezifischer sein?',
+                micStop: 'Aufnahme stoppen',
+                micStart: 'Spracheingabe',
+                btnSend: 'Nachricht senden',
+            },
+            hi: {
+                pageTitle: 'Avia - आपका यात्रा सहायक',
+                headerTitle: 'Avia',
+                headerSubtitle: 'आपका इन-फ्लाइट यात्रा सहायक',
+                btnDownload: 'बातचीत डाउनलोड करें',
+                btnPhone: 'फ़ोन पर खोलें',
+                welcomeTitle: 'नमस्ते! मैं Avia हूँ',
+                welcomeSubtitle: 'आपका व्यक्तिगत यात्रा सहायक। अपने गंतव्य के बारे में कुछ भी पूछें, इन-फ्लाइट सेवाएं अनुरोध करें, या अपनी पसंदीदा भाषा में यात्रा युक्तियाँ प्राप्त करें।',
+                promptAttractions: 'शीर्ष आकर्षण क्या हैं?',
+                promptCuisine: 'मुझे कौन सा स्थानीय भोजन आज़माना चाहिए?',
+                promptWater: 'क्या मुझे पानी मिल सकता है?',
+                promptWeather: 'मौसम कैसा है?',
+                placeholderDest: 'गंतव्य',
+                placeholderAsk: 'मुझसे कुछ भी पूछें...',
+                placeholderSeat: 'जैसे, 12A',
+                placeholderDestSettings: 'जैसे, दुबई',
+                labelCached: 'कैश्ड',
+                labelCrewNotified: 'क्रू को सूचित किया',
+                settingsTitle: 'सेटिंग्स',
+                settingsSeat: 'सीट नंबर',
+                settingsDest: 'गंतव्य',
+                settingsLang: 'भाषा',
+                btnClearChat: 'बातचीत साफ़ करें',
+                qrTitle: 'अपने फ़ोन पर जारी रखें',
+                qrText: 'अपने मोबाइल डिवाइस पर चैट खोलने के लिए इस QR कोड को स्कैन करें।',
+                svcTitle: 'सेवा अनुरोध का पता चला',
+                svcText: 'क्या आप अपने अनुरोध के बारे में क्रू को सूचित करना चाहते हैं?',
+                btnNo: '✕ नहीं',
+                btnYes: '✓ हाँ',
+                toastCleared: 'बातचीत साफ़ की गई',
+                toastClearFail: 'बातचीत साफ़ नहीं हो सकी',
+                toastDownloaded: 'चैट डाउनलोड की गई',
+                toastNoMessages: 'डाउनलोड करने के लिए कोई संदेश नहीं',
+                toastCrewNotified: 'क्रू को सूचित कर दिया गया है!',
+                toastSvcFail: 'सेवा अनुरोध भेजने में विफल।',
+                toastFetchFail: 'प्रतिक्रिया प्राप्त करने में विफल। कृपया पुनः प्रयास करें।',
+                toastFetchFailShort: 'प्रतिक्रिया प्राप्त करने में विफल।',
+                errGeneric: 'क्षमा करें, एक त्रुटि हुई। कृपया पुनः प्रयास करें।',
+                rephraseMsg: 'क्या आप अपना प्रश्न दोबारा और अधिक स्पष्ट रूप से पूछ सकते हैं?',
+                micStop: 'रिकॉर्डिंग बंद करें',
+                micStart: 'वॉइस इनपुट',
+                btnSend: 'संदेश भेजें',
+            },
+            pt: {
+                pageTitle: 'Avia - Seu Assistente de Viagem',
+                headerTitle: 'Avia',
+                headerSubtitle: 'Seu Assistente de Voo',
+                btnDownload: 'Baixar conversa',
+                btnPhone: 'Abrir no telefone',
+                welcomeTitle: 'Olá! Eu sou a Avia',
+                welcomeSubtitle: 'Sua assistente de viagem pessoal. Pergunte-me qualquer coisa sobre seu destino, solicite serviços de bordo ou obtenha dicas de viagem no seu idioma preferido.',
+                promptAttractions: 'Quais são as principais atrações?',
+                promptCuisine: 'Qual comida local devo experimentar?',
+                promptWater: 'Posso tomar um pouco de água por favor?',
+                promptWeather: 'Como está o tempo?',
+                placeholderDest: 'Destino',
+                placeholderAsk: 'Pergunte-me qualquer coisa...',
+                placeholderSeat: 'ex., 12A',
+                placeholderDestSettings: 'ex., Dubai',
+                labelCached: 'Em cache',
+                labelCrewNotified: 'Tripulação notificada',
+                settingsTitle: 'Configurações',
+                settingsSeat: 'Número do assento',
+                settingsDest: 'Destino',
+                settingsLang: 'Idioma',
+                btnClearChat: 'Limpar conversa',
+                qrTitle: 'Continuar no seu telefone',
+                qrText: 'Escaneie este código QR para abrir o chat no seu dispositivo móvel.',
+                svcTitle: 'Solicitação de serviço detectada',
+                svcText: 'Você gostaria de notificar a tripulação sobre sua solicitação?',
+                btnNo: '✕ Não',
+                btnYes: '✓ Sim',
+                toastCleared: 'Conversa limpa',
+                toastClearFail: 'Falha ao limpar a conversa',
+                toastDownloaded: 'Chat baixado',
+                toastNoMessages: 'Nenhuma mensagem para baixar',
+                toastCrewNotified: 'A tripulação foi notificada!',
+                toastSvcFail: 'Falha ao enviar solicitação de serviço.',
+                toastFetchFail: 'Falha ao obter resposta. Tente novamente.',
+                toastFetchFailShort: 'Falha ao obter resposta.',
+                errGeneric: 'Desculpe, encontrei um erro. Por favor, tente novamente.',
+                rephraseMsg: 'Você pode reformular sua pergunta e ser mais específico?',
+                micStop: 'Parar gravação',
+                micStart: 'Entrada de voz',
+                btnSend: 'Enviar mensagem',
+            },
+            th: {
+                pageTitle: 'Avia - ผู้ช่วยการเดินทางของคุณ',
+                headerTitle: 'Avia',
+                headerSubtitle: 'ผู้ช่วยบนเครื่องบินของคุณ',
+                btnDownload: 'ดาวน์โหลดการสนทนา',
+                btnPhone: 'เปิดบนโทรศัพท์',
+                welcomeTitle: 'สวัสดี! ฉันคือ Avia',
+                welcomeSubtitle: 'ผู้ช่วยการเดินทางส่วนตัวของคุณ ถามฉันเกี่ยวกับปลายทางของคุณ ขอบริการบนเครื่องบิน หรือรับเคล็ดลับการเดินทางในภาษาที่คุณต้องการ',
+                promptAttractions: 'สถานที่ท่องเที่ยวยอดนิยมคืออะไร?',
+                promptCuisine: 'ควรลองอาหารท้องถิ่นอะไร?',
+                promptWater: 'ขอน้ำหน่อยได้ไหม?',
+                promptWeather: 'อากาศเป็นอย่างไร?',
+                placeholderDest: 'ปลายทาง',
+                placeholderAsk: 'ถามฉันอะไรก็ได้...',
+                placeholderSeat: 'เช่น, 12A',
+                placeholderDestSettings: 'เช่น, ดูไบ',
+                labelCached: 'แคช',
+                labelCrewNotified: 'แจ้งลูกเรือแล้ว',
+                settingsTitle: 'การตั้งค่า',
+                settingsSeat: 'หมายเลขที่นั่ง',
+                settingsDest: 'ปลายทาง',
+                settingsLang: 'ภาษา',
+                btnClearChat: 'ล้างการสนทนา',
+                qrTitle: 'ทำต่อบนโทรศัพท์ของคุณ',
+                qrText: 'สแกน QR โค้ดนี้เพื่อเปิดแชทบนอุปกรณ์มือถือของคุณ',
+                svcTitle: 'ตรวจพบคำขอบริการ',
+                svcText: 'คุณต้องการแจ้งลูกเรือเกี่ยวกับคำขอของคุณหรือไม่?',
+                btnNo: '✕ ไม่',
+                btnYes: '✓ ใช่',
+                toastCleared: 'ล้างการสนทนาแล้ว',
+                toastClearFail: 'ไม่สามารถล้างการสนทนาได้',
+                toastDownloaded: 'ดาวน์โหลดแชทแล้ว',
+                toastNoMessages: 'ไม่มีข้อความที่จะดาวน์โหลด',
+                toastCrewNotified: 'แจ้งลูกเรือแล้ว!',
+                toastSvcFail: 'ไม่สามารถส่งคำขอบริการได้',
+                toastFetchFail: 'ไม่สามารถรับการตอบกลับได้ โปรดลองอีกครั้ง',
+                toastFetchFailShort: 'ไม่สามารถรับการตอบกลับได้',
+                errGeneric: 'ขออภัย พบข้อผิดพลาด โปรดลองอีกครั้ง',
+                rephraseMsg: 'คุณช่วยถามใหม่โดยระบุให้ชัดเจนขึ้นได้ไหม?',
+                micStop: 'หยุดบันทึก',
+                micStart: 'ป้อนเสียง',
+                btnSend: 'ส่งข้อความ',
+            },
+        };
+
         createApp({
             setup() {
                 // State
@@ -237,17 +558,13 @@
                 const destination = ref(localStorage.getItem('destination') || 'Dubai');
                 const language = ref(localStorage.getItem('language') || 'en');
                 const showSettings = ref(false);
+                const showQr = ref(false);
                 const toast = ref(null);
                 const messagesArea = ref(null);
                 const inputField = ref(null);
 
-                // Quick prompts (translated based on language)
-                const quickPrompts = ref({
-                    attractions: 'What are the top attractions?',
-                    cuisine: 'What local food should I try?',
-                    water: 'Can I get some water please?',
-                    weather: "What's the weather like?"
-                });
+                // Translation helper — reactive to language changes
+                const t = (key) => TRANSLATIONS[language.value]?.[key] ?? TRANSLATIONS['en'][key] ?? key;
 
                 // Speech recognition
                 const speechSupported = ref(false);
@@ -288,15 +605,18 @@
                     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
                 };
 
-                const sendMessage = async () => {
-                    if (!canSend.value) return;
+                const sendMessage = async (directQuery = null) => {
+                    const query = directQuery !== null
+                        ? directQuery
+                        : inputText.value.trim();
 
-                    const query = inputText.value.trim();
-                    inputText.value = '';
-                    
-                    // Reset textarea height
-                    if (inputField.value) {
-                        inputField.value.style.height = 'auto';
+                    if (!query || !destination.value.trim() || isLoading.value) return;
+
+                    if (directQuery === null) {
+                        inputText.value = '';
+                        if (inputField.value) {
+                            inputField.value.style.height = 'auto';
+                        }
                     }
 
                     // Add user message
@@ -323,9 +643,8 @@
 
                         const data = await response.json();
                         
-                        // Check if service was detected
+                        // Check if service was detected — show confirmation dialog
                         if (data.service_detected) {
-                            // Store pending service request
                             pendingService.value = {
                                 query,
                                 serviceType: data.service_type,
@@ -333,9 +652,7 @@
                             };
                             showServiceConfirm.value = true;
                         } else {
-                            // Parse markdown for regular response
                             const htmlContent = marked.parse(data.answer || data.response || '');
-
                             messages.value.push({
                                 role: 'assistant',
                                 content: data.answer || data.response,
@@ -348,11 +665,10 @@
 
                     } catch (error) {
                         console.error('Error:', error);
-                        showToast('Failed to get response. Please try again.', 'error', '❌');
-                        
+                        showToast(t('toastFetchFail'), 'error', '❌');
                         messages.value.push({
                             role: 'assistant',
-                            content: 'Sorry, I encountered an error. Please try again.',
+                            content: t('errGeneric'),
                             timestamp: new Date().toISOString()
                         });
                     }
@@ -362,8 +678,7 @@
                 };
 
                 const sendQuickPrompt = (prompt) => {
-                    inputText.value = prompt;
-                    sendMessage();
+                    sendMessage(prompt);
                 };
 
                 const confirmServiceRequest = async () => {
@@ -386,7 +701,6 @@
 
                         const data = await response.json();
                         const htmlContent = marked.parse(data.answer || '');
-
                         messages.value.push({
                             role: 'assistant',
                             content: data.answer,
@@ -394,11 +708,10 @@
                             timestamp: data.timestamp || new Date().toISOString(),
                             serviceAlert: true
                         });
-
-                        showToast('Crew has been notified!', 'success', '✅');
+                        showToast(t('toastCrewNotified'), 'success', '✅');
                     } catch (error) {
                         console.error('Error:', error);
-                        showToast('Failed to send service request.', 'error', '❌');
+                        showToast(t('toastSvcFail'), 'error', '❌');
                     }
 
                     pendingService.value = null;
@@ -406,68 +719,19 @@
                     scrollToBottom();
                 };
 
-                const cancelServiceRequest = async () => {
+                const cancelServiceRequest = () => {
                     if (!pendingService.value) return;
-
                     showServiceConfirm.value = false;
-                    isLoading.value = true;
 
-                    try {
-                        // Send as regular query - add context to avoid re-triggering service detection
-                        const response = await fetch('/api/query', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                query: 'If it is an in-flight service request that you CANNOT assist with, Please inform me to request cabin crew service asssistance. Otherwise, Tell me about: ' + pendingService.value.query,
-                                destination: destination.value,
-                                seatNumber: seatNumber.value,
-                                language: language.value
-                            })
-                        });
-
-                        const data = await response.json();
-                        
-                        // Handle response even if service is re-detected
-                        if (data.service_detected) {
-                            // If still detected as service, try with explicit info request
-                            const retryResponse = await fetch('/api/query', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    query: 'What information can you give me about ' + pendingService.value.query + '? I just want to know, not request it.',
-                                    destination: destination.value,
-                                    seatNumber: seatNumber.value,
-                                    language: language.value
-                                })
-                            });
-                            const retryData = await retryResponse.json();
-                            if (retryData.answer) {
-                                const htmlContent = marked.parse(retryData.answer);
-                                messages.value.push({
-                                    role: 'assistant',
-                                    content: retryData.answer,
-                                    html: htmlContent,
-                                    timestamp: retryData.timestamp || new Date().toISOString(),
-                                    fromCache: retryData.from_cache
-                                });
-                            }
-                        } else {
-                            const htmlContent = marked.parse(data.answer || data.response || '');
-                            messages.value.push({
-                                role: 'assistant',
-                                content: data.answer || data.response,
-                                html: htmlContent,
-                                timestamp: data.timestamp || new Date().toISOString(),
-                                fromCache: data.from_cache
-                            });
-                        }
-                    } catch (error) {
-                        console.error('Error:', error);
-                        showToast('Failed to get response.', 'error', '❌');
-                    }
+                    // Keep the user's message and add a rephrase prompt
+                    messages.value.push({
+                        role: 'assistant',
+                        content: t('rephraseMsg'),
+                        html: marked.parse(t('rephraseMsg')),
+                        timestamp: new Date().toISOString()
+                    });
 
                     pendingService.value = null;
-                    isLoading.value = false;
                     scrollToBottom();
                 };
 
@@ -475,11 +739,32 @@
                     try {
                         await fetch(`/api/conversation/${seatNumber.value}`, { method: 'DELETE' });
                         messages.value = [];
-                        showToast('Conversation cleared', 'success', '🗑️');
+                        showToast(t('toastCleared'), 'success', '🗑️');
                         showSettings.value = false;
                     } catch (error) {
-                        showToast('Failed to clear conversation', 'error', '❌');
+                        showToast(t('toastClearFail'), 'error', '❌');
                     }
+                };
+
+                const downloadChat = () => {
+                    if (messages.value.length === 0) {
+                        showToast(t('toastNoMessages'), 'error', '❌');
+                        return;
+                    }
+                    const lines = messages.value.map(m => {
+                        const time = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
+                        const role = m.role === 'user' ? 'You' : 'Avia';
+                        return `[${time}] ${role}:\n${m.content}\n`;
+                    });
+                    const header = `Avia Chat — Seat ${seatNumber.value} — ${destination.value}\nExported ${new Date().toLocaleString()}\n${'—'.repeat(40)}\n\n`;
+                    const blob = new Blob([header + lines.join('\n')], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `avia-chat-${seatNumber.value}-${new Date().toISOString().slice(0,10)}.txt`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showToast(t('toastDownloaded'), 'success', '📥');
                 };
 
                 // Speech recognition
@@ -522,54 +807,18 @@
                     }
                 };
 
-                // Translate quick prompts to current language
-                const translateQuickPrompts = async () => {
-                    if (language.value === 'en') {
-                        // Reset to English
-                        quickPrompts.value = {
-                            attractions: 'What are the top attractions?',
-                            cuisine: 'What local food should I try?',
-                            water: 'Can I get some water please?',
-                            weather: "What's the weather like?"
-                        };
-                        return;
-                    }
-
-                    try {
-                        const prompts = {
-                            attractions: 'What are the top attractions?',
-                            cuisine: 'What local food should I try?',
-                            water: 'Can I get some water please?',
-                            weather: "What's the weather like?"
-                        };
-
-                        // Translate each prompt
-                        for (const [key, text] of Object.entries(prompts)) {
-                            const response = await fetch('/api/translate', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ text, language: language.value })
-                            });
-                            const data = await response.json();
-                            quickPrompts.value[key] = data.translated;
-                        }
-                    } catch (error) {
-                        console.error('Failed to translate prompts:', error);
-                    }
-                };
-
-                // Watchers - persist settings
+                // Watchers - persist settings, update page title on language change
                 watch(seatNumber, (val) => localStorage.setItem('seatNumber', val));
                 watch(destination, (val) => localStorage.setItem('destination', val));
                 watch(language, (val) => {
                     localStorage.setItem('language', val);
-                    translateQuickPrompts();  // Translate quick prompts when language changes
+                    document.title = TRANSLATIONS[val]?.pageTitle ?? TRANSLATIONS['en'].pageTitle;
                 });
 
                 // Lifecycle
                 onMounted(() => {
                     initSpeechRecognition();
-                    translateQuickPrompts();  // Translate prompts on load
+                    document.title = TRANSLATIONS[language.value]?.pageTitle ?? TRANSLATIONS['en'].pageTitle;
                     inputField.value?.focus();
                 });
 
@@ -581,6 +830,7 @@
                     destination,
                     language,
                     showSettings,
+                    showQr,
                     toast,
                     messagesArea,
                     inputField,
@@ -589,7 +839,7 @@
                     canSend,
                     pendingService,
                     showServiceConfirm,
-                    quickPrompts,
+                    t,
                     formatTime,
                     autoResize,
                     sendMessage,
@@ -597,6 +847,7 @@
                     confirmServiceRequest,
                     cancelServiceRequest,
                     clearChat,
+                    downloadChat,
                     toggleSpeech
                 };
             }

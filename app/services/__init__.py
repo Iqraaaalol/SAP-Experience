@@ -18,6 +18,7 @@ from .chroma_service import (
 )
 from .llm_service import LlamaInterface, init_llm
 from .cache import QueryCache, ConversationHistory, query_cache, conversation_history
+from .analytics import MoodAnalytics, mood_analytics
 from .database import init_db, get_stats, log_query, log_conversation_message, verify_crew_credentials
 
 __all__ = [
@@ -39,6 +40,8 @@ __all__ = [
     'LlamaInterface', 'init_llm',
     # Cache
     'QueryCache', 'ConversationHistory', 'query_cache', 'conversation_history',
+    # Analytics
+    'MoodAnalytics', 'mood_analytics',
     # Database
     'init_db', 'get_stats', 'log_query', 'log_conversation_message', 'verify_crew_credentials',
 ]

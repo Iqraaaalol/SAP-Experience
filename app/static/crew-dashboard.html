@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Crew Dashboard - Flight Attendant Alerts</title>
     <script src="/static/vendor/js/vue.global.prod.js"></script>
+    <script src="/static/vendor/js/chart.umd.min.js"></script>
     <link href="/static/vendor/fonts/inter.css" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/crew-dashboard.css">
 </head>
@@ -58,6 +59,13 @@
                     >
                         <span>{{ cat.icon }} {{ cat.label }}</span>
                         <span class="category-badge">{{ stats.categories[cat.key] || 0 }}</span>
+                    </div>
+                    <div
+                        :class="['category-item category-item-divider', { active: selectedCategory === 'analytics' }]"
+                        @click="selectedCategory = 'analytics'"
+                    >
+                        <span>📊 Analytics</span>
+                        <span class="category-badge"></span>
                     </div>
                     <div
                         :class="['category-item category-item-divider', { active: selectedCategory === 'video' }]"
@@ -257,6 +265,83 @@
                     </div>
                 </div>
 
+                <!-- ANALYTICS VIEW -->
+                <div v-else-if="selectedCategory === 'analytics'" class="panel-content">
+                    <div class="analytics-grid">
+
+                        <!-- Mood Over Time (Line Chart) -->
+                        <div class="analytics-card">
+                            <div class="analytics-card-header">
+                                <span class="analytics-card-title">📈 Mood Over Time</span>
+                                <span class="analytics-card-sub">Grouped emotion counts per minute</span>
+                            </div>
+                            <div class="analytics-chart-wrap">
+                                <canvas ref="moodTimelineCanvas"></canvas>
+                            </div>
+                            <div v-if="!analyticsData.timeline" class="analytics-empty">Waiting for mood data…</div>
+                        </div>
+
+                        <!-- Mood Distribution (Doughnut) -->
+                        <div class="analytics-card">
+                            <div class="analytics-card-header">
+                                <span class="analytics-card-title">🧩 Mood Distribution</span>
+                                <span class="analytics-card-sub">Emotion breakdown this session</span>
+                            </div>
+                            <div class="analytics-chart-wrap analytics-chart-doughnut">
+                                <canvas ref="moodDistCanvas"></canvas>
+                            </div>
+                            <div v-if="!analyticsData.distribution || Object.keys(analyticsData.distribution).length === 0" class="analytics-empty">No emotion data yet</div>
+                        </div>
+
+                        <!-- Alert Metrics -->
+                        <div class="analytics-card">
+                            <div class="analytics-card-header">
+                                <span class="analytics-card-title">🚨 Alert Frequency</span>
+                                <span class="analytics-card-sub">Alerts per 5-min window</span>
+                            </div>
+                            <div class="analytics-stat-row">
+                                <div class="analytics-stat">
+                                    <div class="analytics-stat-value">{{ analyticsData.alertMeta?.total ?? '—' }}</div>
+                                    <div class="analytics-stat-label">Total</div>
+                                </div>
+                                <div class="analytics-stat">
+                                    <div class="analytics-stat-value">{{ analyticsData.alertMeta?.pending ?? '—' }}</div>
+                                    <div class="analytics-stat-label">Pending</div>
+                                </div>
+                                <div class="analytics-stat">
+                                    <div class="analytics-stat-value">{{ analyticsData.alertMeta?.avg_response_seconds != null ? analyticsData.alertMeta.avg_response_seconds + 's' : '—' }}</div>
+                                    <div class="analytics-stat-label">Avg Response</div>
+                                </div>
+                            </div>
+                            <div class="analytics-chart-wrap">
+                                <canvas ref="alertFreqCanvas"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Query Analytics -->
+                        <div class="analytics-card">
+                            <div class="analytics-card-header">
+                                <span class="analytics-card-title">💬 Passenger Queries</span>
+                                <span class="analytics-card-sub">Topic trends &amp; queries per seat</span>
+                            </div>
+                            <div class="analytics-stat-row">
+                                <div class="analytics-stat">
+                                    <div class="analytics-stat-value">{{ analyticsData.queryMeta?.total ?? '—' }}</div>
+                                    <div class="analytics-stat-label">Total Queries</div>
+                                </div>
+                                <div class="analytics-stat" v-for="(count, seat) in (analyticsData.queryMeta?.by_seat || {})" :key="seat">
+                                    <div class="analytics-stat-value">{{ count }}</div>
+                                    <div class="analytics-stat-label">Seat {{ seat }}</div>
+                                </div>
+                            </div>
+                            <div class="analytics-chart-wrap">
+                                <canvas ref="queryVolCanvas"></canvas>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
                 <!-- ALERT LIST VIEW -->
                 <div v-else class="panel-content">
                     <!-- Filter Tabs -->
@@ -326,7 +411,7 @@
     </div><!-- end #app -->
 
     <script>
-        const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+        const { createApp, ref, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
 
         createApp({
             setup() {
@@ -363,11 +448,27 @@
                     { key: 'ANXIOUS',  label: 'Anxious',  color: '#3C0AB4' },
                 ];
 
+                // Analytics state
+                const analyticsData = ref({
+                    timeline: null,
+                    distribution: null,
+                    alertMeta: null,
+                    queryMeta: null,
+                });
+                const moodTimelineCanvas = ref(null);
+                const moodDistCanvas     = ref(null);
+                const alertFreqCanvas    = ref(null);
+                const queryVolCanvas     = ref(null);
+
+                // Chart instances (to destroy on update)
+                let chartInstances = {};
+
                 // Internal timers / WS
                 let wsRef                = null;
                 let reconnectTimeout     = null;
                 let seatDataInterval     = null;
                 let systemStatusInterval = null;
+                let analyticsInterval    = null;
 
                 //  Static data 
                 const categories = [
@@ -707,6 +808,187 @@
                     } catch (e) { console.error('System status fetch failed:', e); }
                 };
 
+                //  Analytics 
+                const CHART_COLORS = {
+                    positive: '#4caf87',
+                    neutral:  '#6cb4d9',
+                    negative: '#c0544a',
+                    surprise: '#d4a84b',
+                    sleeping: '#6c747c',
+                };
+                const EMOTION_COLORS = {
+                    happy:    '#4caf87',
+                    neutral:  '#6cb4d9',
+                    angry:    '#c0544a',
+                    disgust:  '#8b5e3c',
+                    fear:     '#9b59b6',
+                    sad:      '#3498db',
+                    surprise: '#d4a84b',
+                    sleeping: '#6c747c',
+                };
+
+                const destroyChart = (key) => {
+                    if (chartInstances[key]) {
+                        chartInstances[key].destroy();
+                        chartInstances[key] = null;
+                    }
+                };
+
+                const renderMoodTimeline = (data) => {
+                    if (!moodTimelineCanvas.value || !data?.buckets?.length) return;
+                    destroyChart('timeline');
+                    const ctx = moodTimelineCanvas.value.getContext('2d');
+                    chartInstances.timeline = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: data.buckets,
+                            datasets: Object.entries(data.series).map(([group, values]) => ({
+                                label: group.charAt(0).toUpperCase() + group.slice(1),
+                                data: values,
+                                borderColor: CHART_COLORS[group] || '#aaa',
+                                backgroundColor: (CHART_COLORS[group] || '#aaa') + '22',
+                                fill: true,
+                                tension: 0.35,
+                                pointRadius: 2,
+                            })),
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: { legend: { labels: { color: '#c4cbd8', font: { size: 11 } } } },
+                            scales: {
+                                x: { ticks: { color: '#6c747c', maxTicksLimit: 12 }, grid: { color: '#25405e' } },
+                                y: { beginAtZero: true, ticks: { color: '#6c747c', precision: 0 }, grid: { color: '#25405e' } },
+                            },
+                        },
+                    });
+                };
+
+                const renderMoodDist = (data) => {
+                    if (!moodDistCanvas.value || !data || !Object.keys(data).length) return;
+                    destroyChart('dist');
+                    const labels = Object.keys(data);
+                    const values = Object.values(data);
+                    const colors = labels.map(l => EMOTION_COLORS[l] || '#aaa');
+                    const ctx = moodDistCanvas.value.getContext('2d');
+                    chartInstances.dist = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: labels.map(l => l.charAt(0).toUpperCase() + l.slice(1)),
+                            datasets: [{ data: values, backgroundColor: colors, borderColor: '#1b3a5e', borderWidth: 2 }],
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: { legend: { position: 'right', labels: { color: '#c4cbd8', font: { size: 11 }, padding: 12 } } },
+                        },
+                    });
+                };
+
+                const renderAlertFreq = (data) => {
+                    if (!alertFreqCanvas.value || !data?.buckets?.length) return;
+                    destroyChart('alertFreq');
+                    const ctx = alertFreqCanvas.value.getContext('2d');
+                    chartInstances.alertFreq = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: data.buckets,
+                            datasets: [{ label: 'Alerts', data: data.counts, backgroundColor: '#c0544a99', borderColor: '#c0544a', borderWidth: 1 }],
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: { legend: { display: false } },
+                            scales: {
+                                x: { ticks: { color: '#6c747c' }, grid: { color: '#25405e' } },
+                                y: { beginAtZero: true, ticks: { color: '#6c747c', precision: 0 }, grid: { color: '#25405e' } },
+                            },
+                        },
+                    });
+                };
+
+                const renderQueryVol = (data) => {
+                    if (!queryVolCanvas.value || !data?.by_category) return;
+                    destroyChart('queryVol');
+                    const ctx = queryVolCanvas.value.getContext('2d');
+                    const CATEGORY_COLORS = {
+                        'Food & Beverage':  '#e8a87c',
+                        'Entertainment':    '#a8d8ea',
+                        'Comfort':          '#b8f0b8',
+                        'Travel Info':      '#f6d860',
+                        'Assistance':       '#c3a0d8',
+                    };
+                    const datasets = Object.entries(data.by_category).map(([cat, counts]) => ({
+                        label: cat,
+                        data: counts,
+                        borderColor: CATEGORY_COLORS[cat] || '#597f97',
+                        backgroundColor: (CATEGORY_COLORS[cat] || '#597f97') + '33',
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        tension: 0.3,
+                        fill: false,
+                    }));
+                    chartInstances.queryVol = new Chart(ctx, {
+                        type: 'line',
+                        data: { labels: data.buckets || [], datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: true,
+                                    labels: { color: '#6c747c', boxWidth: 12, font: { size: 11 } },
+                                },
+                            },
+                            scales: {
+                                x: { ticks: { color: '#6c747c' }, grid: { color: '#25405e' } },
+                                y: { beginAtZero: true, ticks: { color: '#6c747c', precision: 0 }, grid: { color: '#25405e' } },
+                            },
+                        },
+                    });
+                };
+
+                const fetchAnalytics = async () => {
+                    try {
+                        const [tlRes, distRes, alertRes, queryRes] = await Promise.all([
+                            fetch('/api/analytics/mood-timeline'),
+                            fetch('/api/analytics/mood-distribution'),
+                            fetch('/api/analytics/alerts'),
+                            fetch('/api/analytics/queries'),
+                        ]);
+                        const tl   = tlRes.ok    ? await tlRes.json()    : null;
+                        const dist = distRes.ok  ? await distRes.json()  : null;
+                        const al   = alertRes.ok ? await alertRes.json() : null;
+                        const qr   = queryRes.ok ? await queryRes.json() : null;
+
+                        analyticsData.value = {
+                            timeline: tl,
+                            distribution: dist,
+                            alertMeta: al,
+                            queryMeta: qr,
+                        };
+
+                        await nextTick();
+                        renderMoodTimeline(tl);
+                        renderMoodDist(dist);
+                        renderAlertFreq(al);
+                        renderQueryVol(qr);
+                    } catch (e) {
+                        console.error('Analytics fetch failed:', e);
+                    }
+                };
+
+                // Start/stop analytics polling when tab changes
+                watch(selectedCategory, async (cat, prev) => {
+                    if (cat === 'analytics') {
+                        await fetchAnalytics();
+                        analyticsInterval = setInterval(fetchAnalytics, 15000);
+                    } else if (prev === 'analytics') {
+                        clearInterval(analyticsInterval);
+                        analyticsInterval = null;
+                    }
+                });
+
                 //  Lifecycle 
                 onMounted(async () => {
                     const hasSession = await ensureCrewSession();
@@ -744,6 +1026,8 @@
                     if (reconnectTimeout) clearTimeout(reconnectTimeout);
                     clearInterval(seatDataInterval);
                     clearInterval(systemStatusInterval);
+                    clearInterval(analyticsInterval);
+                    Object.keys(chartInstances).forEach(destroyChart);
                 });
 
                 return {
@@ -753,6 +1037,8 @@
                     cvNoMqtt,
                     systemStats, systemHealth,
                     lightingOverride, lightingScene, lightingScenes, currentSceneColor,
+                    analyticsData,
+                    moodTimelineCanvas, moodDistCanvas, alertFreqCanvas, queryVolCanvas,
                     categories, filters,
                     stats, filteredAlerts,
                     toggleCv, calibrateSeats, acknowledgeAlert,

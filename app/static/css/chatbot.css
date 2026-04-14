@@ -774,6 +774,58 @@ body {
 }
 
 /* ===========================================
+   QR Code Modal
+   =========================================== */
+.qr-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.92);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    z-index: 100;
+    max-width: 340px;
+    width: 90%;
+    text-align: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+}
+
+.qr-modal.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+.qr-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.qr-modal-title {
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--text-primary);
+}
+
+.qr-modal-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+}
+
+.qr-modal-img {
+    width: 100%;
+    max-width: 240px;
+    border-radius: var(--radius-sm);
+}
+
+/* ===========================================
    Mobile & Tablet Responsive
    =========================================== */
 

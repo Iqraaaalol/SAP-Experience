@@ -45,7 +45,8 @@ from services import (
     build_context_from_chroma, init_chroma_manager, get_chroma_manager,
     init_llm,
     query_cache, conversation_history,
-    init_db, get_stats, verify_crew_credentials,
+    mood_analytics,
+    init_db, get_stats, log_query, verify_crew_credentials,
 )
 
 
@@ -224,6 +225,7 @@ class CVStreamProcessor:
         self.cached_seat_assignments = {}
         self._last_sleep_check = {}
         self._mood_cooldowns: dict = {}  # seat_id -> timestamp of last mood alert
+        self._last_analytics_snapshot: float = 0.0
 
         # MQTT publisher — sends seat emotions to Arduino.
         # Priority: explicit route payload override > env flag > CV config.
@@ -346,6 +348,11 @@ class CVStreamProcessor:
 
                 # Fire crew alerts for negative emotions above confidence threshold
                 self._check_mood_alerts(seat_emotions, current_time)
+
+                # Record mood snapshot for analytics (throttled to ~10 s)
+                if seat_emotions and (current_time - self._last_analytics_snapshot) >= 10.0:
+                    mood_analytics.record_snapshot(seat_emotions)
+                    self._last_analytics_snapshot = current_time
 
                 self.last_emotion_update = current_time
             else:
@@ -647,25 +654,12 @@ async def handle_query(request: QueryRequest):
     # Use LLM function calling to detect service requests
     service_request = await Llama.detect_service_with_tools(request.query, request.language)
     if service_request:
-        alert = {
-            'seatNumber': request.seatNumber,
-            'serviceType': service_request['serviceType'],
-            'message': request.query,  # Show the original passenger query
-            'priority': service_request['priority'],
-            'timestamp': datetime.now().isoformat()
-        }
-        await crew_manager.broadcast(alert)
-        print(f"🚨 Service request detected: {service_request['serviceType']} from seat {request.seatNumber}")
-        response_message = get_service_message(
-            request.language, 
-            service_request['serviceType'], 
-            request.seatNumber
-        )
+        # Return detection info to the client for confirmation — do NOT alert crew yet
         return {
-            "answer": response_message,
+            "service_detected": True,
+            "service_type": service_request['serviceType'],
+            "priority": service_request['priority'],
             "destination": request.destination,
-            "from_cache": False,
-            "service_alert_sent": True,
             "timestamp": datetime.now().isoformat()
         }
     
@@ -682,6 +676,7 @@ async def handle_query(request: QueryRequest):
         if cached_response:
             # Store in conversation history even for cached responses
             conversation_history.add_exchange(request.seatNumber, request.query, cached_response)
+            await log_query(request.seatNumber, request.destination, request.query, cached_response)
             ts = datetime.now().isoformat()
             print(f"[handle_query] cache hit - returning timestamp: {ts}")
             return {
@@ -743,8 +738,9 @@ PASSENGER MESSAGE:
     if not has_history:
         query_cache.set(cache_key, answer)
     
-    # Always store in conversation history
+    # Always store in conversation history and persist to DB for analytics
     conversation_history.add_exchange(request.seatNumber, request.query, answer)
+    await log_query(request.seatNumber, request.destination, request.query, answer)
     
     ts = datetime.now().isoformat()
     print(f"[handle_query] model response - returning timestamp: {ts}")
@@ -756,6 +752,38 @@ PASSENGER MESSAGE:
         "timestamp": ts
     }
 
+
+
+@app.post("/api/service-request")
+async def service_request(request: QueryRequest):
+    """Passenger confirms a service request — alert crew and return localized acknowledgment."""
+    service_info = await Llama.detect_service_with_tools(request.query, request.language)
+    service_type = service_info['serviceType'] if service_info else 'assistance'
+    priority = service_info['priority'] if service_info else 'medium'
+
+    alert = {
+        'seatNumber': request.seatNumber,
+        'serviceType': service_type,
+        'message': request.query,
+        'priority': priority,
+        'timestamp': datetime.now().isoformat()
+    }
+    await crew_manager.broadcast(alert)
+    print(f"🚨 Service request confirmed: {service_type} from seat {request.seatNumber}")
+
+    response_message = get_service_message(
+        request.language,
+        service_type,
+        request.seatNumber
+    )
+    await log_query(request.seatNumber, request.destination, request.query, response_message)
+    return {
+        "answer": response_message,
+        "destination": request.destination,
+        "from_cache": False,
+        "service_alert_sent": True,
+        "timestamp": datetime.now().isoformat()
+    }
 
 
 @app.post("/api/crew-request")
@@ -900,6 +928,182 @@ async def get_seat_status(_crew_user: str = Depends(require_crew_auth)):
         }
     
     return calibration_data
+
+
+# =============================================================================
+# ROUTES - Analytics
+# =============================================================================
+
+@app.get("/api/analytics/mood-timeline")
+async def analytics_mood_timeline(_crew_user: str = Depends(require_crew_auth)):
+    """Time-bucketed mood group counts for the line chart."""
+    return mood_analytics.get_mood_over_time(bucket_seconds=60)
+
+
+@app.get("/api/analytics/mood-distribution")
+async def analytics_mood_distribution(_crew_user: str = Depends(require_crew_auth)):
+    """Total per-emotion counts across the session for the doughnut chart."""
+    return mood_analytics.get_mood_distribution()
+
+
+@app.get("/api/analytics/alerts")
+async def analytics_alerts(_crew_user: str = Depends(require_crew_auth)):
+    """Alert frequency over time and average crew response time."""
+    all_alerts = crew_manager.get_alerts()
+
+    # Bucket alerts into 5-minute windows
+    buckets: dict[str, int] = {}
+    response_times: list[float] = []
+    emotion_counts: dict[str, int] = {}
+
+    for a in all_alerts:
+        ts = a.get("timestamp")
+        if ts:
+            try:
+                dt = datetime.fromisoformat(ts)
+                # Round to 5-minute bucket
+                minute = dt.minute - (dt.minute % 5)
+                label = dt.strftime("%H:") + f"{minute:02d}"
+                buckets[label] = buckets.get(label, 0) + 1
+            except (ValueError, TypeError):
+                pass
+
+        # Response time
+        ack_ts = a.get("acknowledged_at")
+        if ack_ts and ts:
+            try:
+                dt_created = datetime.fromisoformat(ts)
+                dt_acked = datetime.fromisoformat(ack_ts)
+                delta = (dt_acked - dt_created).total_seconds()
+                if delta >= 0:
+                    response_times.append(delta)
+            except (ValueError, TypeError):
+                pass
+
+        # Emotion breakdown
+        emo = a.get("emotion")
+        if emo:
+            emotion_counts[emo] = emotion_counts.get(emo, 0) + 1
+
+    # Sort buckets chronologically
+    sorted_labels = sorted(buckets.keys())
+    sorted_counts = [buckets[l] for l in sorted_labels]
+
+    avg_response = round(sum(response_times) / len(response_times), 1) if response_times else None
+
+    return {
+        "buckets": sorted_labels,
+        "counts": sorted_counts,
+        "total": len(all_alerts),
+        "pending": len([a for a in all_alerts if not a.get("acknowledged")]),
+        "avg_response_seconds": avg_response,
+        "emotion_breakdown": emotion_counts,
+    }
+
+
+@app.get("/api/analytics/queries")
+async def analytics_queries(_crew_user: str = Depends(require_crew_auth)):
+    """Query volume over time, broken down by topic category and seat."""
+    import aiosqlite
+    from services.config import DB_FILE
+
+    # Topic category keyword lists — a query can match multiple categories
+    QUERY_CATEGORIES: dict[str, list[str]] = {
+        "Food & Beverage": [
+            "food", "eat", "eating", "drink", "meal", "water", "juice", "coffee", "tea",
+            "snack", "hungry", "thirsty", "menu", "dinner", "lunch", "breakfast", "wine",
+            "beer", "alcohol", "vegetarian", "vegan", "beverage", "bottle", "hot chocolate",
+            "soda", "dessert", "fruit", "bread", "butter", "sandwich",
+        ],
+        "Entertainment": [
+            "movie", "film", "music", "show", "tv", "television", "game", "channel",
+            "headphone", "earphone", "wifi", "wi-fi", "internet", "screen", "watch",
+            "listen", "play", "entertainment", "song", "video", "radio", "podcast",
+            "streaming", "series", "episode",
+        ],
+        "Comfort": [
+            "pillow", "blanket", "seat", "cold", "hot", "warm", "temperature",
+            "uncomfortable", "pain", "sick", "ill", "sleep", "tired", "rest", "recline",
+            "air", "noise", "light", "dark", "legroom", "space", "smelly", "smell",
+            "smell", "headache", "nausea", "shaking",
+        ],
+        "Travel Info": [
+            "destination", "airport", "landing", "arrival", "arrive", "departure",
+            "depart", "time", "hour", "delay", "gate", "connection", "flight", "route",
+            "turbulence", "weather", "when", "where", "how long", "duration", "distance",
+            "altitude", "speed", "timezone", "local time",
+        ],
+        "Assistance": [
+            "help", "assist", "assistance", "need", "request", "call", "staff", "crew",
+            "attendant", "problem", "issue", "wrong", "broken", "emergency", "medical",
+            "doctor", "allergy", "wheelchair", "lost", "missing", "complaint",
+        ],
+    }
+
+    session_start = mood_analytics.get_session_start()
+
+    try:
+        db = await aiosqlite.connect(DB_FILE)
+        db.row_factory = aiosqlite.Row
+
+        if session_start:
+            cursor = await db.execute(
+                "SELECT timestamp, seatNumber, queryText FROM passengerQueries WHERE timestamp >= ? ORDER BY timestamp",
+                (session_start,),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT timestamp, seatNumber, queryText FROM passengerQueries ORDER BY timestamp"
+            )
+        rows = await cursor.fetchall()
+        await db.close()
+    except Exception as e:
+        return {"error": str(e), "buckets": [], "by_category": {}, "by_seat": {}, "total": 0}
+
+    # Collect all time-bucket labels
+    all_labels: set[str] = set()
+    # by_category_buckets[category][label] = count
+    by_category_buckets: dict[str, dict[str, int]] = {cat: {} for cat in QUERY_CATEGORIES}
+    by_seat: dict[str, int] = {}
+
+    for row in rows:
+        ts_str = row["timestamp"]
+        seat = row["seatNumber"]
+        query_text = (row["queryText"] or "").lower()
+
+        label: str | None = None
+        if ts_str:
+            try:
+                dt = datetime.fromisoformat(ts_str)
+                minute = dt.minute - (dt.minute % 5)
+                label = dt.strftime("%H:") + f"{minute:02d}"
+                all_labels.add(label)
+            except (ValueError, TypeError):
+                pass
+
+        if seat:
+            by_seat[seat] = by_seat.get(seat, 0) + 1
+
+        if label:
+            for category, keywords in QUERY_CATEGORIES.items():
+                if any(kw in query_text for kw in keywords):
+                    by_category_buckets[category][label] = (
+                        by_category_buckets[category].get(label, 0) + 1
+                    )
+
+    sorted_labels = sorted(all_labels)
+    by_category = {
+        cat: [by_category_buckets[cat].get(lbl, 0) for lbl in sorted_labels]
+        for cat in QUERY_CATEGORIES
+    }
+
+    return {
+        "buckets": sorted_labels,
+        "by_category": by_category,
+        "by_seat": by_seat,
+        "total": len(rows),
+    }
+
 
 #=============================================================================
 # ROUTES - CV Video Stream

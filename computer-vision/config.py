@@ -17,8 +17,8 @@ RANDOM_SEED = 42
 
 LABEL_SMOOTHING = 0.1
 MIXUP_ALPHA = 0.2
-USE_CLASS_WEIGHTS = False  # ← Use class weights in loss (not recommended with weighted sampler)
-USE_WEIGHTED_SAMPLER = False  # ← Use WeightedRandomSampler for class balancing (recommended over USE_CLASS_WEIGHTS)
+USE_CLASS_WEIGHTS = False 
+USE_WEIGHTED_SAMPLER = False  
 EMA_DECAY = 0.9999
 USE_COORD_ATTN = True  # ← Enable CA with fixed implementation
 
@@ -73,7 +73,12 @@ EAR_THRESHOLD = 0.20       # Below this Eye Aspect Ratio, eyes are considered cl
 SLEEP_DURATION = 3.0        # Seconds of sustained eye closure to trigger sleeping state
 SLEEP_EMOTION_COLOR = (128, 128, 128)  # Gray color for sleeping overlay (BGR)
 FACE_DETECTION_INTERVAL = 0.50  # Seconds between full-frame face detections (lower = more CPU, higher = more FPS)
-FACE_DETECTION_SCALE = 0.60 
+FACE_DETECTION_SCALE = 0.60  # Fast downscaled pass for nearby faces (<1.0 = faster, misses distant faces)
+FACE_DETECTION_UPSCALE = 1.50  # Additional upscaled pass for distant/small faces (>1.0 adds a higher-res detection pass; more CPU)
+FACE_DETECTION_RETRY_FULL_RES = True  # Include a full-resolution (1.0x) pass between downscale and upscale passes
+FACE_MIN_DETECTION_CONFIDENCE = 0.20  # Filters weak detections (only affects faces the detector already found; does NOT extend range — use UPSCALE for that)
+FACE_MIN_PRESENCE_CONFIDENCE = 0.20   # Landmark presence confidence threshold
+FACE_MIN_TRACKING_CONFIDENCE = 0.20   # Tracking confidence threshold
 SLEEP_CHECK_INTERVAL = 0.60  # Seconds between per-face EAR landmark checks
 EMOTION_UPDATE_INTERVAL = 0.60  # Seconds between mood inference passes
 EMOTION_USE_AMP = True  # Use mixed precision (CUDA) for faster emotion inference
