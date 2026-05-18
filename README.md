@@ -37,14 +37,8 @@ ollama serve or have app open
 
 2. Access the local passenger interface: "localhost:8000"
    Access the crew dashboard with: "localhost:8000/crew-dashboard"
+   Crew login (default): username "admin" / password "admin"
 
 3. Access through network local passenger interface: "{Your_IP_here}:8000"
    Access through network crew dashboard with: "{Your_IP_here}:8000/crew-dashboard"
-
-
-### Refer to the website's README.md file to run the A/SAP webpage
-
-### How to run mood detection model:
-Go to the crew dashboard and enable CV.
-
-To calibrate temporary seat regions, run computer-vision/mood_detection.py and press 'c' to create a seat_calibration.json file that contains seating region information for mood detection
+   Crew login (default): username "admin" / password "admin"

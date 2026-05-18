@@ -31,10 +31,22 @@ try:
     import config
     EAR_THRESHOLD = getattr(config, 'EAR_THRESHOLD', 0.25)
     SLEEP_DURATION = getattr(config, 'SLEEP_DURATION', 3.0)
+    FACE_DETECTION_SCALE = float(getattr(config, 'FACE_DETECTION_SCALE', 0.6))
+    FACE_DETECTION_UPSCALE = float(getattr(config, 'FACE_DETECTION_UPSCALE', 1.0))
+    FACE_DETECTION_RETRY_FULL_RES = bool(getattr(config, 'FACE_DETECTION_RETRY_FULL_RES', True))
+    FACE_MIN_DETECTION_CONFIDENCE = float(getattr(config, 'FACE_MIN_DETECTION_CONFIDENCE', 0.2))
+    FACE_MIN_PRESENCE_CONFIDENCE = float(getattr(config, 'FACE_MIN_PRESENCE_CONFIDENCE', 0.2))
+    FACE_MIN_TRACKING_CONFIDENCE = float(getattr(config, 'FACE_MIN_TRACKING_CONFIDENCE', 0.2))
 except ImportError:
     EAR_THRESHOLD = 0.25
     SLEEP_DURATION = 3.0
-
+    FACE_DETECTION_SCALE = 0.6
+    FACE_DETECTION_UPSCALE = 1.0
+    FACE_DETECTION_RETRY_FULL_RES = True
+    FACE_MIN_DETECTION_CONFIDENCE = 0.2
+    FACE_MIN_PRESENCE_CONFIDENCE = 0.2
+    FACE_MIN_TRACKING_CONFIDENCE = 0.2
+    
 # MediaPipe FaceMesh landmark indices for eye contours
 # Left eye (from the subject's perspective)
 LEFT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
@@ -86,9 +98,16 @@ class SleepDetector:
     def __init__(self, ear_threshold=None, sleep_duration=None):
         self.ear_threshold = ear_threshold if ear_threshold is not None else EAR_THRESHOLD
         self.sleep_duration = sleep_duration if sleep_duration is not None else SLEEP_DURATION
+        self.face_detection_scale = max(0.3, min(1.0, float(FACE_DETECTION_SCALE)))
+        self.face_detection_upscale = max(1.0, min(2.5, float(FACE_DETECTION_UPSCALE)))
+        self.face_detection_retry_full_res = FACE_DETECTION_RETRY_FULL_RES
+        self.min_face_detection_confidence = max(0.0, min(1.0, FACE_MIN_DETECTION_CONFIDENCE))
+        self.min_face_presence_confidence = max(0.0, min(1.0, FACE_MIN_PRESENCE_CONFIDENCE))
+        self.min_tracking_confidence = max(0.0, min(1.0, FACE_MIN_TRACKING_CONFIDENCE))
 
         # Per-seat state: seat_id -> timestamp when eyes first closed
         self._eyes_closed_since = {}
+        self._last_full_face_landmarks = None
 
         # Initialize MediaPipe FaceMesh
         self._face_mesh = None
@@ -104,16 +123,22 @@ class SleepDetector:
                     print("Sleep detection will be disabled.")
                     return
             
-            # MediaPipe 0.10+ uses tasks API
-            base_options = mp_python.BaseOptions(model_asset_path=FACE_LANDMARKER_MODEL_PATH)
-            options = vision.FaceLandmarkerOptions(
-                base_options=base_options,
-                num_faces=1,
-                min_face_detection_confidence=0.5,
-                output_face_blendshapes=False,
-                output_facial_transformation_matrixes=False
-            )
-            self._face_mesh = vision.FaceLandmarker.create_from_options(options)
+            self._face_mesh = self._create_landmarker(num_faces=1)
+
+    def _create_landmarker(self, num_faces):
+        """Create a FaceLandmarker with shared confidence thresholds."""
+        base_options = mp_python.BaseOptions(model_asset_path=FACE_LANDMARKER_MODEL_PATH)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            num_faces=num_faces,
+            min_face_detection_confidence=self.min_face_detection_confidence,
+            min_face_presence_confidence=self.min_face_presence_confidence,
+            min_tracking_confidence=self.min_tracking_confidence,
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+            result_callback=None,
+        )
+        return vision.FaceLandmarker.create_from_options(options)
 
     @property
     def available(self):
@@ -167,6 +192,25 @@ class SleepDetector:
 
         return (left_ear + right_ear) / 2.0
 
+    def compute_ear_from_landmarks(self, face_landmarks_mp):
+        """Compute EAR directly from full-frame MediaPipe landmarks (no re-detection)."""
+        if face_landmarks_mp is None:
+            return None
+
+        def _get_points(indices):
+            return np.array([
+                [face_landmarks_mp[i].x, face_landmarks_mp[i].y]
+                for i in indices
+            ])
+
+        left_eye = _get_points(LEFT_EYE_INDICES)
+        right_eye = _get_points(RIGHT_EYE_INDICES)
+
+        left_ear = _eye_aspect_ratio(left_eye)
+        right_ear = _eye_aspect_ratio(right_eye)
+
+        return (left_ear + right_ear) / 2.0
+
     def update(self, seat_id, ear, timestamp):
         """
         Update per-seat sleep tracking state.
@@ -206,9 +250,32 @@ class SleepDetector:
         """Clear all tracking state."""
         self._eyes_closed_since.clear()
 
+    @staticmethod
+    def _compute_iou(box_a, box_b):
+        """Compute Intersection over Union of two [x1, y1, x2, y2] boxes."""
+        x1 = max(box_a[0], box_b[0])
+        y1 = max(box_a[1], box_b[1])
+        x2 = min(box_a[2], box_b[2])
+        y2 = min(box_a[3], box_b[3])
+
+        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+        area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+        area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+        union = area_a + area_b - intersection
+
+        if union < 1e-6:
+            return 0.0
+        return intersection / union
+
     def detect_faces_in_frame(self, frame_bgr, max_faces=4):
         """
         Detect all faces in a full frame using MediaPipe FaceLandmarker.
+
+        Uses multi-scale detection: runs the detector at progressively higher
+        resolutions (FACE_DETECTION_SCALE → 1.0 → FACE_DETECTION_UPSCALE) and
+        merges results via IoU-based deduplication. This catches nearby faces
+        cheaply at low resolution while discovering distant/small faces at
+        higher resolution.
 
         Returns output compatible with MTCNN's detect(..., landmarks=True):
             boxes     - ndarray (N, 4)  [x1, y1, x2, y2] in pixel coords
@@ -229,6 +296,7 @@ class SleepDetector:
             Mouth right (viewer's right):  61
         """
         if not self.available or frame_bgr is None or frame_bgr.size == 0:
+            self._last_full_face_landmarks = None
             return None, None, None
 
         import cv2
@@ -237,57 +305,103 @@ class SleepDetector:
         # Lazily create / cache a multi-face landmarker
         if (not hasattr(self, '_multi_face_landmarker')
                 or getattr(self, '_multi_face_max', 0) != max_faces):
-            base_options = mp_python.BaseOptions(model_asset_path=FACE_LANDMARKER_MODEL_PATH)
-            options = vision.FaceLandmarkerOptions(
-                base_options=base_options,
-                num_faces=max_faces,
-                min_face_detection_confidence=0.5,
-                output_face_blendshapes=False,
-                output_facial_transformation_matrixes=False,
-            )
-            self._multi_face_landmarker = vision.FaceLandmarker.create_from_options(options)
+            self._multi_face_landmarker = self._create_landmarker(num_faces=max_faces)
             self._multi_face_max = max_faces
 
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        mp_image = Image(image_format=ImageFormat.SRGB, data=rgb)
-        results = self._multi_face_landmarker.detect(mp_image)
+        h, w = frame_bgr.shape[:2]
 
-        if not results.face_landmarks:
+        # Build ordered list of unique detection scales.
+        # FACE_DETECTION_SCALE  – fast downscaled pass for nearby faces
+        # 1.0                   – full resolution for medium-distance faces
+        # FACE_DETECTION_UPSCALE – upscaled pass for distant / small faces
+        candidate_scales = [max(0.3, min(1.0, self.face_detection_scale))]
+        if self.face_detection_retry_full_res:
+            candidate_scales.append(1.0)
+        if self.face_detection_upscale > 1.05:
+            candidate_scales.append(min(2.5, self.face_detection_upscale))
+
+        # Deduplicate scales that are very close together
+        scales = [candidate_scales[0]]
+        for s in candidate_scales[1:]:
+            if all(abs(s - existing) > 0.05 for existing in scales):
+                scales.append(s)
+
+        all_boxes = []
+        all_probs = []
+        all_landmarks = []
+        all_face_lms = []
+        iou_threshold = 0.3  # Overlap above this → same face, skip duplicate
+
+        for scale in scales:
+            if abs(scale - 1.0) > 1e-3:
+                detect_w = max(320, int(w * scale))
+                detect_h = max(180, int(h * scale))
+                detect_frame = cv2.resize(frame_bgr, (detect_w, detect_h),
+                                          interpolation=cv2.INTER_LINEAR)
+            else:
+                detect_w, detect_h = w, h
+                detect_frame = frame_bgr
+
+            rgb = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2RGB)
+            mp_image = Image(image_format=ImageFormat.SRGB, data=rgb)
+            results = self._multi_face_landmarker.detect(mp_image)
+
+            if not results.face_landmarks:
+                continue
+
+            scale_x = w / float(detect_w)
+            scale_y = h / float(detect_h)
+
+            for face_lms in results.face_landmarks:
+                xs = [lm.x * detect_w * scale_x for lm in face_lms]
+                ys = [lm.y * detect_h * scale_y for lm in face_lms]
+                x1 = max(0, int(min(xs)))
+                y1 = max(0, int(min(ys)))
+                x2 = min(w, int(max(xs)))
+                y2 = min(h, int(max(ys)))
+                box = [x1, y1, x2, y2]
+
+                # Skip faces that overlap with one already found at a prior scale
+                if any(self._compute_iou(box, prev) > iou_threshold
+                       for prev in all_boxes):
+                    continue
+
+                all_boxes.append(box)
+                all_probs.append(1.0)
+                all_face_lms.append(face_lms)
+
+                def _avg(indices, _fl=face_lms, _dw=detect_w, _dh=detect_h,
+                         _sx=scale_x, _sy=scale_y):
+                    pts = np.array([[_fl[i].x * _dw * _sx, _fl[i].y * _dh * _sy]
+                                    for i in indices])
+                    return pts.mean(axis=0)
+
+                # Viewer's left eye  = subject's right eye = RIGHT_EYE_INDICES
+                # Viewer's right eye = subject's left eye  = LEFT_EYE_INDICES
+                left_eye_center  = _avg(RIGHT_EYE_INDICES)
+                right_eye_center = _avg(LEFT_EYE_INDICES)
+                nose_tip         = np.array([face_lms[4].x * w,   face_lms[4].y * h])
+                mouth_left       = np.array([face_lms[291].x * w, face_lms[291].y * h])
+                mouth_right      = np.array([face_lms[61].x * w,  face_lms[61].y * h])
+
+                all_landmarks.append([left_eye_center, right_eye_center,
+                                       nose_tip, mouth_left, mouth_right])
+
+            # Stop trying higher scales if we already found max_faces
+            if len(all_boxes) >= max_faces:
+                break
+
+        if not all_boxes:
+            self._last_full_face_landmarks = None
             return None, None, None
 
-        h, w = frame_bgr.shape[:2]
-        boxes, probs, landmarks_out = [], [], []
-
-        for face_lms in results.face_landmarks:
-            xs = [lm.x * w for lm in face_lms]
-            ys = [lm.y * h for lm in face_lms]
-            x1 = max(0, int(min(xs)))
-            y1 = max(0, int(min(ys)))
-            x2 = min(w, int(max(xs)))
-            y2 = min(h, int(max(ys)))
-            boxes.append([x1, y1, x2, y2])
-            probs.append(1.0)
-
-            def _avg(indices):
-                pts = np.array([[face_lms[i].x * w, face_lms[i].y * h]
-                                for i in indices])
-                return pts.mean(axis=0)
-
-            # Viewer's left eye  = subject's right eye = RIGHT_EYE_INDICES
-            # Viewer's right eye = subject's left eye  = LEFT_EYE_INDICES
-            left_eye_center  = _avg(RIGHT_EYE_INDICES)
-            right_eye_center = _avg(LEFT_EYE_INDICES)
-            nose_tip         = np.array([face_lms[4].x * w,   face_lms[4].y * h])
-            mouth_left       = np.array([face_lms[291].x * w, face_lms[291].y * h])
-            mouth_right      = np.array([face_lms[61].x * w,  face_lms[61].y * h])
-
-            landmarks_out.append([left_eye_center, right_eye_center,
-                                   nose_tip, mouth_left, mouth_right])
+        # Keep full MediaPipe landmarks for optional downstream EAR calculation.
+        self._last_full_face_landmarks = all_face_lms
 
         return (
-            np.array(boxes,        dtype=np.float32),
-            np.array(probs,        dtype=np.float32),
-            np.array(landmarks_out, dtype=np.float32),
+            np.array(all_boxes,     dtype=np.float32),
+            np.array(all_probs,     dtype=np.float32),
+            np.array(all_landmarks, dtype=np.float32),
         )
 
     def get_ear_state(self, seat_id):
@@ -302,3 +416,7 @@ class SleepDetector:
             'eyes_closed_since': closed_since,
             'is_tracking': closed_since is not None,
         }
+
+    def get_last_full_face_landmarks(self):
+        """Return full-frame MediaPipe landmarks from the most recent face detection pass."""
+        return self._last_full_face_landmarks

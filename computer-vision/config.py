@@ -17,8 +17,8 @@ RANDOM_SEED = 42
 
 LABEL_SMOOTHING = 0.1
 MIXUP_ALPHA = 0.2
-USE_CLASS_WEIGHTS = False  # ← Use class weights in loss (not recommended with weighted sampler)
-USE_WEIGHTED_SAMPLER = False  # ← Use WeightedRandomSampler for class balancing (recommended over USE_CLASS_WEIGHTS)
+USE_CLASS_WEIGHTS = False 
+USE_WEIGHTED_SAMPLER = False  
 EMA_DECAY = 0.9999
 USE_COORD_ATTN = True  # ← Enable CA with fixed implementation
 
@@ -54,7 +54,7 @@ TRAIN_DIR = FER_TRAIN_DIR
 TEST_DIR = FER_TEST_DIR
 
 CHECKPOINT_DIR = "checkpoints"
-BEST_MODEL_PATH = "best_convnext_base.pth"  # FER-only trained model
+BEST_MODEL_PATH = "affectnet_standalone_best_convnext_base.pth"  # FER-only trained model
 AFFECTNET_MODEL_PATH = "best_convnext_base.pth"  # AffectNet fine-tuned model
 FER_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, BEST_MODEL_PATH)  # Path to FER-trained model for fine-tuning
 
@@ -63,20 +63,46 @@ SEAT_GRID_ROWS = 2
 SEAT_GRID_COLS = 2
 SEAT_VACANCY_TIMEOUT = 5.0  # Seconds before seat can be reassigned
 SEAT_EMBEDDING_THRESHOLD = 0.7  # Cosine similarity threshold for face re-ID
+SEAT_USE_EMBEDDINGS = False  # Set False to disable FaceNet re-ID entirely and use zone-based seat assignment only
+SEAT_REID_INTERVAL = 0.50  # Seconds between FaceNet re-identification passes
+SEAT_UPDATE_INTERVAL = 0.20  # Seconds between seat assignment updates in realtime pipeline
 SEAT_NAMES = ["1A", "1B", "2A", "2B"]  # Row-major order: top-left, top-right, bottom-left, bottom-right
 
 # Sleep Detection Configuration (MediaPipe EAR-based)
-EAR_THRESHOLD = 0.15        # Below this Eye Aspect Ratio, eyes are considered closed
+EAR_THRESHOLD = 0.20       # Below this Eye Aspect Ratio, eyes are considered closed
 SLEEP_DURATION = 3.0        # Seconds of sustained eye closure to trigger sleeping state
 SLEEP_EMOTION_COLOR = (128, 128, 128)  # Gray color for sleeping overlay (BGR)
+FACE_DETECTION_INTERVAL = 0.50  # Seconds between full-frame face detections (lower = more CPU, higher = more FPS)
+FACE_DETECTION_SCALE = 0.6  # Fast downscaled pass for nearby faces (<1.0 = faster, misses distant faces)
+FACE_DETECTION_UPSCALE = 1.50  # Additional upscaled pass for distant/small faces (>1.0 adds a higher-res detection pass; more CPU)
+FACE_DETECTION_RETRY_FULL_RES = True  # Include a full-resolution (1.0x) pass between downscale and upscale passes
+FACE_MIN_DETECTION_CONFIDENCE = 0.20  # Filters weak detections (only affects faces the detector already found; does NOT extend range — use UPSCALE for that)
+FACE_MIN_PRESENCE_CONFIDENCE = 0.20   # Landmark presence confidence threshold
+FACE_MIN_TRACKING_CONFIDENCE = 0.20   # Tracking confidence threshold
+SLEEP_CHECK_INTERVAL = 0.60  # Seconds between per-face EAR landmark checks
+EMOTION_UPDATE_INTERVAL = 0.60  # Seconds between mood inference passes
+EMOTION_USE_AMP = True  # Use mixed precision (CUDA) for faster emotion inference
 
 # MQTT Configuration (for sending seat emotions to Arduino)
 MQTT_ENABLED = True
-MQTT_BROKER_HOST = "10.110.0.13"  # Change to broker IP if running on another machine
+MQTT_BROKER_HOST = "192.168.0.100"  # Change to broker IP if running on another machine
 MQTT_BROKER_PORT = 1883
 MQTT_TOPIC = "sap/seats/emotion"  # Topic format: sap/seats/emotion/{seat_id}
 MQTT_CLIENT_ID = "sap-emotion-detector"
-MQTT_PUBLISH_INTERVAL = 1.0  # Seconds between MQTT publishes (avoid flooding)
+MQTT_PUBLISH_INTERVAL = 3.0  # Seconds between MQTT publishes (avoid flooding)
+
+# Rendering & Performance Configuration (for webpage MJPEG stream)
+RENDER_FPS_TARGET = 12  # Target FPS for MJPEG output (webpage display) — reduced from 15 for more stable playback
+RENDER_ANNOTATIONS_ENABLED = True  # Toggle all drawing/annotations on/off
+RENDER_LANDMARKS = False  # Draw facial landmarks (expensive; off by default)
+RENDER_DASHBOARD = True  # Draw dashboard overlay with face count and seat summary
+RENDER_SEAT_ZONES = True  # Draw seat zone boundaries
+RENDER_PRESET = 'medium'  # 'high' (all details), 'medium' (no landmarks), 'low' (boxes only)
+JPEG_QUALITY = 75  # JPEG compression quality (1-100) — reduced from 85 to speed up encoding
+JPEG_CACHE_FRAMES = 2  # Reuse cached JPEG for N consecutive frames if unchanged
+DEBUG_RENDERING_FPS = True  # Log actual rendering FPS and frame timings
+SKIP_FRAMES_IF_BACKLOG = True  # Drop frames from render queue if backlog exceeds threshold
+RENDER_QUEUE_MAX_BACKLOG = 3  # Max queued frames before skipping oldest
 
 # Optional: resume training from a specific checkpoint path. Set to a file path to enable.
 # Example: RESUME_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, 'resume.pth')

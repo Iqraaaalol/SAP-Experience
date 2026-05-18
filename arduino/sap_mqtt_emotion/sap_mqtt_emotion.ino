@@ -28,12 +28,17 @@
 
 // ======================== CONFIGURATION ========================
 // WiFi credentials — update these for your network
-const char WIFI_SSID[]     = "where_is_sushi?";
-const char WIFI_PASSWORD[] = "Sushi@2005";
+const char WIFI_SSID[]     = "ASAP_LAN";
+const char WIFI_PASSWORD[] = "ASAP_V4!";
 
 // MQTT broker — use the IP of the machine running Mosquitto
-const char MQTT_BROKER[]   = "10.110.0.13";  // <-- Change to your broker IP
+const char MQTT_BROKER[]   = "192.168.0.100";  // <-- Change to your broker IP
 const int  MQTT_PORT       = 1883;
+
+// Connection retry settings
+const unsigned long MQTT_RECONNECT_INTERVAL = 5000;   // wait 5s between MQTT reconnect attempts
+const unsigned long WIFI_RECONNECT_INTERVAL = 10000;  // wait 10s between WiFi reconnect attempts
+const unsigned long LOOP_DELAY               = 100;   // prevent tight busy-loop
 
 // MQTT topic to subscribe to (matches Python publisher)
 const char MQTT_TOPIC_ALL[]      = "sap/seats/emotion";        // combined summary
@@ -49,39 +54,51 @@ const char* SEAT_IDS[NUM_SEATS] = {"1A", "1B", "2A", "2B"};
 #define LED_COUNT  30     // number of LEDs in the strip
 // effect IDs: 0=solid  1=slow pulse(~4s)  2=fade-in(~3s)  3=ultra-slow pulse(~8s)
 
+// L293D fan motor
+#define FAN_ENABLE 5      // PWM speed control (ENA on L293D)
+#define FAN_DIRA   3      // direction pin A
+#define FAN_DIRB   4      // direction pin B
+// Fan always spins in one direction — DIRA=HIGH, DIRB=LOW.
+
 // How often to print status (ms)
 const unsigned long STATUS_INTERVAL = 5000;
 
 // Transition / guard timings
 const unsigned long TRANSITION_MS = 5000;   // crossfade duration between scenes
-const unsigned long SUSTAIN_MS    = 15000;  // new emotion must hold this long before switching
-const unsigned long COOLDOWN_MS   = 15000;  // lock-out period after a switch completes
+const unsigned long SUSTAIN_MS    = 5000;  // new emotion must hold this long before switching
+const unsigned long COOLDOWN_MS   = 5000;  // lock-out period after a switch completes
+
+// Minimum per-seat confidence required to influence the cabin scene.
+// Readings below this value are ignored in the weighted aggregation.
+const float CONFIDENCE_THRESHOLD = 0.60f;  // 70 %
 // ===============================================================
 
 // ======================== MOOD SCENES =========================
 struct MoodScene {
   uint8_t     r, g, b;
   uint8_t     effect;        // 0=solid | 1=slow pulse | 2=fade-in | 3=ultra-slow pulse
+  uint8_t     fanSpeed;      // 0=off  1-255=PWM speed via L293D
   const char* name;
   const char* description;
 };
 
-MoodScene MOOD_HAPPY    = { 30,  200, 255, 0,
+//                             R    G    B   fx  fan
+MoodScene MOOD_HAPPY    = { 30,  200, 255, 0,  200,
   "HAPPY",    "Bright cyan-white. Daylight energy. Reinforce positive state." };
 
-MoodScene MOOD_NEUTRAL  = { 80,  80,  100, 0,
+MoodScene MOOD_NEUTRAL  = { 80,  80,  100, 0,  150,
   "NEUTRAL",  "Cool white. Non-interventional baseline. Standard cruise." };
 
-MoodScene MOOD_STRESSED = { 30,  20,  200, 1,   // blue-violet + slow pulse
+MoodScene MOOD_STRESSED = { 30,  20,  200, 1,  100,   // blue-violet + slow pulse
   "STRESSED", "Blue-violet. Activates parasympathetic. Lowers cortisol. Slow pulse." };
 
-MoodScene MOOD_ANGRY    = { 255, 30,  85,  0,   // warm pink — NOT red
+MoodScene MOOD_ANGRY    = { 255, 30,  85,  0,  130,   // warm pink — NOT red
   "ANGRY",    "Warm pink. Baker-Miller effect. Involuntary aggression reduction." };
 
-MoodScene MOOD_SAD      = { 40, 50, 150, 0,   // soft blue with tiny red warmth
+MoodScene MOOD_SAD      = { 40,  50,  150, 0,   70,   // soft blue with tiny red warmth
   "SAD",      "Soft blue. Emotional safety. Warm enough to not feel clinical." };
 
-MoodScene MOOD_ANXIOUS  = { 60,  10,  180, 3,   // lavender + ultra-slow pulse
+MoodScene MOOD_ANXIOUS  = { 60,  10,  180, 3,   60,   // lavender + ultra-slow pulse
   "ANXIOUS",  "Lavender. Slows breathing subconsciously. Reduces perceived threat." };
 
 // ── Aggregation tables (order must stay consistent) ────────────
@@ -113,6 +130,10 @@ String seatEmotions[NUM_SEATS];
 float  seatConfidences[NUM_SEATS];
 
 unsigned long lastStatusPrint = 0;
+
+// Connection timing — prevent aggressive reconnection hammering
+unsigned long lastWiFiAttempt = 0;
+unsigned long lastMQTTAttempt = 0;
 
 // Effect state
 MoodScene*    currentMood  = &MOOD_NEUTRAL;
@@ -163,7 +184,11 @@ int seatIndex(const char* id) {
 void connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
 
-  Serial.print("Connecting to WiFi: ");
+  unsigned long now = millis();
+  if (now - lastWiFiAttempt < WIFI_RECONNECT_INTERVAL) return;
+  lastWiFiAttempt = now;
+
+  Serial.print("[WiFi] Connecting to: ");
   Serial.println(WIFI_SSID);
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -176,11 +201,11 @@ void connectWiFi() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected!");
-    Serial.print("IP address: ");
+    Serial.println("\n[WiFi] ✓ Connected!");
+    Serial.print("[WiFi] IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\nWiFi connection FAILED — will retry...");
+    Serial.println("\n[WiFi] ✗ Connection FAILED — will retry in 10s");
   }
 }
 
@@ -190,32 +215,69 @@ void connectWiFi() {
 void connectMQTT() {
   if (mqttClient.connected()) return;
 
-  Serial.print("Connecting to MQTT broker: ");
+  // Don't hammer the broker — respect reconnect interval
+  unsigned long now = millis();
+  if (now - lastMQTTAttempt < MQTT_RECONNECT_INTERVAL) return;
+  
+  // WiFi must be stable first
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[MQTT] Waiting for WiFi to connect first...");
+    connectWiFi();
+    return;
+  }
+
+  lastMQTTAttempt = now;
+
+  Serial.print("[MQTT] Connecting to broker: ");
   Serial.print(MQTT_BROKER);
   Serial.print(":");
   Serial.println(MQTT_PORT);
 
   if (!mqttClient.connect(MQTT_BROKER, MQTT_PORT)) {
-    Serial.print("MQTT connection failed! Error code = ");
-    Serial.println(mqttClient.connectError());
+    int errCode = mqttClient.connectError();
+    Serial.print("[MQTT] ✗ Connection failed! Error: ");
+    Serial.println(errCode);
+    
+    // Decode common error codes
+    switch(errCode) {
+      case -1:
+        Serial.println("       → MQTT_CONNECTION_REFUSED (bad credentials or auth)");
+        break;
+      case -2:
+        Serial.println("       → MQTT_CONNECTION_TIMEOUT (broker not responding)");
+        break;
+      case -3:
+        Serial.println("       → MQTT_CONNECTION_LOST (unexpected disconnect)");
+        break;
+      case -4:
+        Serial.println("       → MQTT_CONN_REFUSED_PROTOCOL_VERSION");
+        break;
+      case -5:
+        Serial.println("       → MQTT_CONN_REFUSED_ID_REJECTED (client ID issue)");
+        break;
+      default:
+        Serial.print("       → Unknown error code: ");
+        Serial.println(errCode);
+    }
+    Serial.println("[MQTT] Will retry in 5s...");
     return;
   }
 
-  Serial.println("MQTT connected!");
+  Serial.println("[MQTT] ✓ Connected!");
 
   // Subscribe to per-seat wildcard topic
   mqttClient.subscribe(MQTT_TOPIC_SEAT);
-  Serial.print("Subscribed to: ");
+  Serial.print("[MQTT] Subscribed to: ");
   Serial.println(MQTT_TOPIC_SEAT);
 
   // Also subscribe to the combined summary topic
   mqttClient.subscribe(MQTT_TOPIC_ALL);
-  Serial.print("Subscribed to: ");
+  Serial.print("[MQTT] Subscribed to: ");
   Serial.println(MQTT_TOPIC_ALL);
 
   // Subscribe to crew dashboard lighting override
   mqttClient.subscribe(MQTT_TOPIC_OVERRIDE);
-  Serial.print("Subscribed to: ");
+  Serial.print("[MQTT] Subscribed to: ");
   Serial.println(MQTT_TOPIC_OVERRIDE);
 }
 
@@ -230,6 +292,13 @@ void onMqttMessage(int messageSize) {
   while (mqttClient.available()) {
     payload += (char)mqttClient.read();
   }
+
+  Serial.print("[MQTT→] Topic: ");
+  Serial.print(topic);
+  Serial.print(" | Size: ");
+  Serial.print(messageSize);
+  Serial.print(" | Payload: ");
+  Serial.println(payload)
 
   // ── Crew dashboard lighting override ────────────────────────
   if (topic == String(MQTT_TOPIC_OVERRIDE)) {
@@ -336,6 +405,14 @@ MoodScene* aggregateCabinMood() {
 
   for (int i = 0; i < NUM_SEATS; i++) {
     if (seatEmotions[i].length() == 0) continue;
+    if (seatConfidences[i] < CONFIDENCE_THRESHOLD) {
+      Serial.print("[AGG] Seat ");
+      Serial.print(SEAT_IDS[i]);
+      Serial.print(" skipped (confidence ");
+      Serial.print(seatConfidences[i], 2);
+      Serial.println(" < threshold)");
+      continue;
+    }
     activeSeats++;
     MoodScene* mood = emotionToMood(seatEmotions[i].c_str());
     for (int m = 0; m < NUM_MOODS; m++) {
@@ -412,6 +489,23 @@ void evaluateMoodCandidate(MoodScene* candidate) {
 }
 
 // ---------------------------------------------------------------
+// Apply fan speed for the active mood scene via L293D
+// ---------------------------------------------------------------
+void updateFan(MoodScene* mood) {
+  if (mood->fanSpeed == 0) {
+    analogWrite(FAN_ENABLE, 0);
+    digitalWrite(FAN_DIRA, LOW);
+    digitalWrite(FAN_DIRB, LOW);
+  } else {
+    digitalWrite(FAN_DIRA, HIGH);  // fixed forward direction
+    digitalWrite(FAN_DIRB, LOW);
+    analogWrite(FAN_ENABLE, mood->fanSpeed);
+  }
+  Serial.print("[FAN] speed → ");
+  Serial.println(mood->fanSpeed);
+}
+
+// ---------------------------------------------------------------
 // Set a new active mood scene
 // ---------------------------------------------------------------
 void applyMood(MoodScene* mood) {
@@ -429,6 +523,8 @@ void applyMood(MoodScene* mood) {
   fadeInDone      = false;
   pendingMood     = nullptr;
   lastSwitchTime  = millis();
+
+  updateFan(mood);   // apply new fan speed immediately
 
   Serial.print("[LIGHT] → ");
   Serial.print(mood->name);
@@ -540,13 +636,21 @@ void setup() {
   Serial.begin(9600);
   // Do NOT block on Serial — without this fix the strip never lights up
   // if no Serial Monitor is open.
-  delay(1000);  // short settle delay for power-on stability
+  delay(5000);  // short settle delay for power-on stability
 
   // WS2812B strip initialisation
   strip.begin();
   strip.setBrightness(200);  // 0-255; explicit so behaviour is always predictable
   strip.clear();
   strip.show();
+
+  // L293D fan motor initialisation
+  pinMode(FAN_ENABLE, OUTPUT); 
+  pinMode(FAN_DIRA,   OUTPUT);
+  pinMode(FAN_DIRB,   OUTPUT);
+  digitalWrite(FAN_DIRA, HIGH);   // fixed forward direction
+  digitalWrite(FAN_DIRB, LOW);
+  analogWrite(FAN_ENABLE, MOOD_NEUTRAL.fanSpeed);  // start at neutral speed
 
   // --- Startup flash: white for 500 ms so you can confirm wiring is good ---
   strip.fill(strip.Color(200, 200, 200));
@@ -582,7 +686,7 @@ void setup() {
 
 // ===============================================================
 void loop() {
-  // Maintain connections
+  // Maintain connections (respects timing intervals internally)
   connectWiFi();
   connectMQTT();
 
@@ -598,4 +702,7 @@ void loop() {
     lastStatusPrint = now;
     printStatus();
   }
+
+  // Prevent tight busy-loop — give system time to process
+  delay(LOOP_DELAY);
 }

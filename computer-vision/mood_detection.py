@@ -72,20 +72,91 @@ def _mqtt_socket_probe(host: str, port: int, timeout: float = 3.0) -> str:
         return f"OS ERROR — {e}"
 
 
+class RuntimeProfiler:
+    """Lightweight runtime profiler for the main computer-vision loop."""
+
+    def __init__(self, enabled: bool = False, slow_threshold_ms: float = 120.0,
+                 summary_interval: int = 60):
+        self.enabled = bool(enabled)
+        self.slow_threshold_s = max(0.0, float(slow_threshold_ms) / 1000.0)
+        self.summary_interval = max(1, int(summary_interval))
+
+        self.frame_index = 0
+        self._frame_start = None
+        self._frame_stage_durations = {}
+        self._totals = {}
+        self._max = {}
+
+    def start_frame(self):
+        if not self.enabled:
+            return
+        self.frame_index += 1
+        self._frame_start = time.perf_counter()
+        self._frame_stage_durations = {}
+
+    def record_stage(self, stage_name: str, start_time: float):
+        if not self.enabled:
+            return
+
+        elapsed = time.perf_counter() - start_time
+        self._frame_stage_durations[stage_name] = self._frame_stage_durations.get(stage_name, 0.0) + elapsed
+        self._totals[stage_name] = self._totals.get(stage_name, 0.0) + elapsed
+        self._max[stage_name] = max(self._max.get(stage_name, 0.0), elapsed)
+
+        if elapsed >= self.slow_threshold_s:
+            print(f"[RUNTIME][SLOW] frame={self.frame_index} stage={stage_name} took {elapsed * 1000.0:.1f} ms")
+
+    def end_frame(self):
+        if not self.enabled or self._frame_start is None:
+            return
+
+        frame_elapsed = time.perf_counter() - self._frame_start
+        self._totals['frame_total'] = self._totals.get('frame_total', 0.0) + frame_elapsed
+        self._max['frame_total'] = max(self._max.get('frame_total', 0.0), frame_elapsed)
+
+        if frame_elapsed >= self.slow_threshold_s:
+            ranked = sorted(self._frame_stage_durations.items(), key=lambda item: item[1], reverse=True)
+            details = ", ".join(f"{name}={duration * 1000.0:.1f}ms" for name, duration in ranked[:6])
+            print(f"[RUNTIME][FRAME] frame={self.frame_index} total={frame_elapsed * 1000.0:.1f} ms | {details}")
+
+        if self.frame_index % self.summary_interval == 0:
+            frame_avg = (self._totals.get('frame_total', 0.0) / self.frame_index) * 1000.0
+            frame_max = self._max.get('frame_total', 0.0) * 1000.0
+            parts = [
+                f"[RUNTIME][SUMMARY] frames={self.frame_index}",
+                f"frame_total=avg:{frame_avg:.1f}/max:{frame_max:.1f}ms",
+            ]
+
+            for stage_name in sorted(name for name in self._totals.keys() if name != 'frame_total'):
+                avg_ms = (self._totals[stage_name] / self.frame_index) * 1000.0
+                max_ms = self._max.get(stage_name, 0.0) * 1000.0
+                parts.append(f"{stage_name}=avg:{avg_ms:.1f}/max:{max_ms:.1f}ms")
+
+            print(" | ".join(parts))
+
+
 class MQTTPublisher:
     """Publishes seat emotion data to an MQTT broker (e.g. Mosquitto)."""
 
     def __init__(self, broker_host=None, broker_port=None, topic=None,
-                 client_id=None, publish_interval=None):
-        self.broker_host = broker_host or getattr(config, 'MQTT_BROKER_HOST', '10.110.0.13')
+                 client_id=None, publish_interval=None,
+                 socket_probe_timeout=None, debug_runtime=False):
+        self.broker_host = broker_host or getattr(config, 'MQTT_BROKER_HOST', '192.168.0.100')
         self.broker_port = broker_port or getattr(config, 'MQTT_BROKER_PORT', 1883)
         self.base_topic = topic or getattr(config, 'MQTT_TOPIC', 'sap/seats/emotion')
         self.client_id = client_id or getattr(config, 'MQTT_CLIENT_ID', 'sap-emotion-detector')
         self.publish_interval = publish_interval or getattr(config, 'MQTT_PUBLISH_INTERVAL', 1.0)
+        if socket_probe_timeout is None:
+            socket_probe_timeout = getattr(config, 'MQTT_SOCKET_PROBE_TIMEOUT', 3.0)
+        self.socket_probe_timeout = max(0.05, float(socket_probe_timeout))
+        self.debug_runtime = bool(debug_runtime)
         self.last_publish_time = 0.0
         self.connected = False          # kept for logging; use client.is_connected() for gating
         self._last_reconnect_attempt = 0.0
         self._reconnect_cooldown = 5.0   # seconds between reconnect attempts
+        self._status_log_interval = 10.0
+        self._next_status_log_time = 0.0
+        self._loop_started = False
 
         if not MQTT_AVAILABLE:
             print("[MQTT] Publisher disabled (paho-mqtt not installed)")
@@ -95,19 +166,29 @@ class MQTTPublisher:
         print(f"[MQTT] Broker target : {self.broker_host}:{self.broker_port}")
         print(f"[MQTT] Client ID     : {self.client_id}")
         print(f"[MQTT] Base topic    : {self.base_topic}")
-        print(f"[MQTT] TCP probe     : {_mqtt_socket_probe(self.broker_host, self.broker_port)}")
+        if self.debug_runtime:
+            probe_start = time.perf_counter()
+            probe_result = _mqtt_socket_probe(self.broker_host, self.broker_port, timeout=self.socket_probe_timeout)
+            probe_elapsed_ms = (time.perf_counter() - probe_start) * 1000.0
+            print(f"[MQTT] TCP probe     : {probe_result}")
+            print(f"[MQTT][TIMING] startup_probe_ms={probe_elapsed_ms:.1f}")
+        else:
+            print("[MQTT] TCP probe     : skipped (enable --debug-runtime for diagnostics)")
         print(f"[MQTT] ────────────────────────────────────────────────────")
 
         self.client = mqtt.Client(client_id=self.client_id,
                                   callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+        self.client.reconnect_delay_set(min_delay=1, max_delay=10)
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
         self.client.on_log = self._on_log  # verbose paho-level logging
 
         try:
-            self.client.connect(self.broker_host, self.broker_port, keepalive=60)
+            # Use async connect so network issues never block the video loop.
+            self.client.connect_async(self.broker_host, self.broker_port, keepalive=60)
             self.client.loop_start()  # Non-blocking background network loop
-            print(f"[MQTT] Async connect initiated → {self.broker_host}:{self.broker_port}")
+            self._loop_started = True
+            print(f"[MQTT] Async connect scheduled → {self.broker_host}:{self.broker_port}")
         except Exception as e:
             print(f"[MQTT] connect() raised: {type(e).__name__}: {e}")
             self.connected = False
@@ -148,11 +229,17 @@ class MQTTPublisher:
         if (current_time - self._last_reconnect_attempt) < self._reconnect_cooldown:
             return
         self._last_reconnect_attempt = current_time
-        probe = _mqtt_socket_probe(self.broker_host, self.broker_port)
-        print(f"[MQTT] Reconnecting… TCP probe: {probe}")
+
+        # Keep reconnect async; never run blocking socket operations in the frame loop.
         try:
-            self.client.reconnect()
-            print(f"[MQTT] reconnect() called — waiting for CONNACK")
+            reconnect_start = time.perf_counter()
+            self.client.connect_async(self.broker_host, self.broker_port, keepalive=60)
+            if not self._loop_started:
+                self.client.loop_start()
+                self._loop_started = True
+            reconnect_elapsed_ms = (time.perf_counter() - reconnect_start) * 1000.0
+            if self.debug_runtime:
+                print(f"[MQTT][TIMING] reconnect_async_ms={reconnect_elapsed_ms:.1f}")
         except Exception as e:
             print(f"[MQTT] reconnect() failed: {type(e).__name__}: {e}")
 
@@ -164,9 +251,14 @@ class MQTTPublisher:
             seat_emotions: Dict[seat_id, (emotion, confidence)]
             current_time: Current timestamp
         """
+        publish_start = time.perf_counter() if self.debug_runtime else None
+
         if not MQTT_AVAILABLE:
             return
         if not self._is_connected():
+            if current_time >= self._next_status_log_time:
+                print("[MQTT] Broker offline; mood detection continues (publish skipped).")
+                self._next_status_log_time = current_time + self._status_log_interval
             self._try_reconnect(current_time)
             return
         if (current_time - self.last_publish_time) < self.publish_interval:
@@ -188,10 +280,16 @@ class MQTTPublisher:
 
         self.last_publish_time = current_time
 
+        if self.debug_runtime and publish_start is not None:
+            publish_elapsed_ms = (time.perf_counter() - publish_start) * 1000.0
+            if publish_elapsed_ms > 50.0:
+                print(f"[MQTT][TIMING] publish_emotions took {publish_elapsed_ms:.1f} ms")
+
     def stop(self):
         """Cleanly disconnect from the broker."""
         if MQTT_AVAILABLE and hasattr(self, 'client'):
-            self.client.loop_stop()
+            if self._loop_started:
+                self.client.loop_stop()
             self.client.disconnect()
             print("[MQTT] Disconnected.")
 
@@ -246,6 +344,7 @@ class ConvNeXtEmotionDetector:
         # Default fallback if checkpoint doesn't have names
         self.class_names = class_names if class_names else config.CLASS_NAMES
         self.model = self._load_model(model_path, num_classes)
+        self.use_amp = bool(getattr(config, 'EMOTION_USE_AMP', True))
         
         self.transform = transforms.Compose([
             transforms.Resize(config.INPUT_SIZE),
@@ -275,6 +374,9 @@ class ConvNeXtEmotionDetector:
             'surprise': (255, 0, 255),    # Magenta
             'sleeping': sleep_color       # Gray
         }
+
+        if self.device.type == 'cuda':
+            torch.backends.cudnn.benchmark = True
         
     def align_face(self, image, landmarks):
         """
@@ -401,34 +503,67 @@ class ConvNeXtEmotionDetector:
         Returns:
             (grouped_emotion, confidence, emotion_dict)
         """
-        if face_image is None or face_image.size == 0:
-            return 'neutral', 0.0, {}
-        
-        # Apply face alignment if landmarks provided
-        if landmarks is not None:
-            face_image = self.align_face(face_image, landmarks)
-            
-        # Convert BGR (OpenCV) to RGB (PIL/Torch)
-        rgb_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb_face)
-        
-        img_tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
-        
-        with torch.no_grad():
-            outputs = self.model(img_tensor)
+        results = self.detect_emotions_batch([face_image], [landmarks] if landmarks is not None else None)
+        return results[0]
+
+    def detect_emotions_batch(self, face_images, landmarks_list=None):
+        """Detect emotions for multiple face crops in one GPU forward pass."""
+        if not face_images:
+            return []
+
+        tensors = []
+        valid_indices = []
+        default_result = ('neutral', 0.0, {})
+        results = [default_result for _ in face_images]
+
+        for i, face_image in enumerate(face_images):
+            if face_image is None or face_image.size == 0:
+                continue
+
+            lm = None
+            if landmarks_list is not None and i < len(landmarks_list):
+                lm = landmarks_list[i]
+
+            if lm is not None:
+                face_image = self.align_face(face_image, lm)
+
+            rgb_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(rgb_face)
+            tensors.append(self.transform(pil_img))
+            valid_indices.append(i)
+
+        if not tensors:
+            return results
+
+        batch = torch.stack(tensors, dim=0).to(self.device, non_blocking=True)
+
+        with torch.inference_mode():
+            if self.device.type == 'cuda' and self.use_amp:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):
+                    outputs = self.model(batch)
+            else:
+                outputs = self.model(batch)
+
             probs = torch.nn.functional.softmax(outputs, dim=1)
-            conf, pred_idx = torch.max(probs, 1)
-            
-        # Get original emotion
-        original_emotion = self.class_names[pred_idx.item()]
-        confidence = conf.item()
-        
-        # Create original emotion probability dict (not grouped)
-        emotion_dict = {}
-        for i, emotion in enumerate(self.class_names):
-            emotion_dict[emotion] = probs[0][i].item()
-        
-        return original_emotion, confidence, emotion_dict
+            confs, pred_indices = torch.max(probs, 1)
+
+        # Move once to CPU to avoid repeated CUDA syncs in Python loops.
+        probs_np = probs.detach().cpu().numpy()
+        confs_np = confs.detach().cpu().numpy()
+        pred_indices_np = pred_indices.detach().cpu().numpy()
+
+        for batch_idx, original_idx in enumerate(valid_indices):
+            pred_idx = int(pred_indices_np[batch_idx])
+            confidence = float(confs_np[batch_idx])
+            original_emotion = self.class_names[pred_idx]
+
+            emotion_dict = {}
+            for i, emotion in enumerate(self.class_names):
+                emotion_dict[emotion] = float(probs_np[batch_idx][i])
+
+            results[original_idx] = (original_emotion, confidence, emotion_dict)
+
+        return results
 
 class FaceDetector:
     def __init__(self, frame_width: int = 1280, frame_height: int = 720, use_seats: bool = True):
@@ -455,8 +590,18 @@ class FaceDetector:
         self.face_history = {} 
         self.emotion_cache = {}  
         self.last_emotion_time = {}
+        self.face_detection_interval = float(getattr(config, 'FACE_DETECTION_INTERVAL', 0.10))
+        self._last_face_detection_time = 0.0
+        self._last_detection_output = (None, None, None)
     
     def detect_faces(self, frame):
+        if not self.sleep_detector.available:
+            return None, None, None
+
+        now = time.time()
+        if (now - self._last_face_detection_time) < self.face_detection_interval:
+            return self._last_detection_output
+
         # MediaPipe FaceLandmarker handles BGR->RGB conversion internally.
         # Returns (boxes, probs, landmarks) in the same shape as MTCNN did:
         #   boxes:     ndarray (N, 4)    [x1, y1, x2, y2]
@@ -464,7 +609,9 @@ class FaceDetector:
         #   landmarks: ndarray (N, 5, 2) [left_eye, right_eye, nose,
         #                                 left_mouth, right_mouth] viewer-perspective
         boxes, probs, landmarks = self.sleep_detector.detect_faces_in_frame(frame)
-        return boxes, probs, landmarks
+        self._last_face_detection_time = now
+        self._last_detection_output = (boxes, probs, landmarks)
+        return self._last_detection_output
     
     def estimate_distance(self, box):
         if box is None:
@@ -607,9 +754,7 @@ class FaceDetector:
         cv2.putText(frame, f"Device: {device}", (w - 200, 60),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        cv2.putText(frame, "Press 'q' to quit | 's' to screenshot | 'r' to reset | 'c' to calibrate", (20, h - 20),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        
+
         return frame
 
 def main():
@@ -623,6 +768,14 @@ def main():
     parser.add_argument('--no-mqtt', action='store_true', help='Disable MQTT publishing')
     parser.add_argument('--mqtt-host', type=str, default=None, help='MQTT broker hostname/IP (default: localhost)')
     parser.add_argument('--mqtt-port', type=int, default=None, help='MQTT broker port (default: 1883)')
+    parser.add_argument('--mqtt-probe-timeout', type=float, default=None,
+                        help='TCP timeout (seconds) for MQTT connectivity probe')
+    parser.add_argument('--debug-runtime', action='store_true',
+                        help='Enable stage-by-stage runtime diagnostics')
+    parser.add_argument('--debug-runtime-slow-ms', type=float, default=120.0,
+                        help='Warn when a stage exceeds this time (milliseconds)')
+    parser.add_argument('--debug-runtime-summary-interval', type=int, default=60,
+                        help='Print runtime summary every N frames')
     args = parser.parse_args()
 
     if args.video.isdigit():
@@ -661,16 +814,19 @@ def main():
     mqtt_publisher = MQTTPublisher(
         broker_host=args.mqtt_host,
         broker_port=args.mqtt_port,
+        socket_probe_timeout=args.mqtt_probe_timeout,
+        debug_runtime=args.debug_runtime,
     ) if mqtt_enabled else None
-    
-    screenshot_count = 0
-    emotion_update_interval = 0.3  
+
+    emotion_update_interval = float(getattr(config, 'EMOTION_UPDATE_INTERVAL', 0.5))
     last_emotion_update = time.time()
     seat_emotions = {}  # seat_id -> (emotion, confidence)
-    
-    # Temporal smoothing setup
-    smoothing_window = 5  # number of recent predictions to average
-    emotion_history = {}  # seat_id/face_idx -> deque of prob vectors
+
+    runtime_profiler = RuntimeProfiler(
+        enabled=args.debug_runtime,
+        slow_threshold_ms=args.debug_runtime_slow_ms,
+        summary_interval=args.debug_runtime_summary_interval,
+    )
     
     print("=" * 60)
     if use_seats:
@@ -684,21 +840,27 @@ def main():
         print(f"Vacancy timeout: {detector.seat_manager.vacancy_timeout}s")
     print("Controls:")
     print("  'q' - Quit")
-    print("  's' - Save screenshot")
     if use_seats:
         print("  'r' - Reset all seats")
         print("  'c' - Calibrate seats")
     print("=" * 60)
+    if args.debug_runtime:
+        print(f"[RUNTIME] Debug enabled (slow>{args.debug_runtime_slow_ms:.1f}ms, summary every {args.debug_runtime_summary_interval} frames)")
     
     fps_start = time.time()
     fps_counter = 0
     fps = 0
     
     while True:
+        runtime_profiler.start_frame()
+
+        capture_start = time.perf_counter()
         ret, frame = cap.read()
+        runtime_profiler.record_stage("capture_read", capture_start)
         if not ret:
+            runtime_profiler.end_frame()
             break
-        
+
         fps_counter += 1
         if time.time() - fps_start > 1.0:
             fps = fps_counter / (time.time() - fps_start)
@@ -706,36 +868,59 @@ def main():
             fps_start = time.time()
 
         current_time = time.time()
-        
+
         # Detect faces
+        detect_start = time.perf_counter()
         boxes, probs, landmarks = detector.detect_faces(frame)
-        
+        full_face_landmarks = detector.sleep_detector.get_last_full_face_landmarks()
+        runtime_profiler.record_stage("detect_faces", detect_start)
+
         # Update seat assignments (if seats enabled)
         seat_assignments = None
         if use_seats and detector.seat_manager:
+            seat_update_start = time.perf_counter()
             seat_assignments = detector.seat_manager.update_seats(boxes, frame, current_time)
-        
+            runtime_profiler.record_stage("update_seats", seat_update_start)
+
         # Update emotions for assigned seats (only when seats are enabled)
         if (current_time - last_emotion_update) > emotion_update_interval:
+            emotions_stage_start = time.perf_counter()
+
             if seat_assignments and detector.use_seats and detector.seat_manager:
                 for seat_id, (face_idx, box) in seat_assignments.items():
                     x1, y1, x2, y2 = box.astype(int)
-                    face_img = frame[max(0, y1):min(frame.shape[0], y2), 
-                                    max(0, x1):min(frame.shape[1], x2)]
-                    
+                    face_img = frame[max(0, y1):min(frame.shape[0], y2),
+                                     max(0, x1):min(frame.shape[1], x2)]
+
                     if face_img.size > 0:
                         # Check for sleeping via EAR before running ConvNeXt
+                        sleep_check_start = time.perf_counter()
                         if detector.sleep_detector.available:
-                            ear = detector.sleep_detector.compute_ear(face_img)
+                            ear = None
+                            if (
+                                full_face_landmarks is not None
+                                and face_idx < len(full_face_landmarks)
+                            ):
+                                ear = detector.sleep_detector.compute_ear_from_landmarks(
+                                    full_face_landmarks[face_idx]
+                                )
+
+                            if ear is None:
+                                ear = detector.sleep_detector.compute_ear(face_img)
+
                             is_sleeping = detector.sleep_detector.update(seat_id, ear, current_time)
                         else:
                             is_sleeping = False
-                        
+                        runtime_profiler.record_stage("sleep_check", sleep_check_start)
+
                         if is_sleeping:
                             # Override emotion with sleeping — skip ConvNeXt inference
+                            state_update_start = time.perf_counter()
                             seat_emotions[seat_id] = ("sleeping", 1.0)
                             detector.seat_manager.update_seat_emotion(
-                                seat_id, "sleeping", 1.0, {"sleeping": 1.0})
+                                seat_id, "sleeping", 1.0, {"sleeping": 1.0}
+                            )
+                            runtime_profiler.record_stage("update_emotion_state", state_update_start)
                         else:
                             # Normal ConvNeXt emotion detection
                             face_landmarks = None
@@ -743,50 +928,67 @@ def main():
                                 face_landmarks = landmarks[face_idx].copy()
                                 face_landmarks[:, 0] -= x1
                                 face_landmarks[:, 1] -= y1
-                            
-                            emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(face_img, face_landmarks)
+
+                            infer_start = time.perf_counter()
+                            emotion, conf, emotion_probs = detector.emotion_detector.detect_emotion(
+                                face_img, face_landmarks
+                            )
+                            runtime_profiler.record_stage("emotion_inference", infer_start)
+
+                            state_update_start = time.perf_counter()
                             seat_emotions[seat_id] = (emotion, conf)
                             detector.seat_manager.update_seat_emotion(seat_id, emotion, conf, emotion_probs)
+                            runtime_profiler.record_stage("update_emotion_state", state_update_start)
 
             # (If seats are disabled we currently skip per-face emotion updates here.)
             last_emotion_update = current_time
-        
+            runtime_profiler.record_stage("update_emotions", emotions_stage_start)
+
         # Publish seat emotions via MQTT
         if mqtt_publisher and seat_emotions:
+            publish_start = time.perf_counter()
             mqtt_publisher.publish_emotions(seat_emotions, current_time)
-        
+            runtime_profiler.record_stage("mqtt_publish", publish_start)
+
         # Clean up emotions and sleep state for vacated seats (only when seat manager exists)
         if detector.use_seats and detector.seat_manager:
+            cleanup_start = time.perf_counter()
             for seat_id in list(seat_emotions.keys()):
                 if not detector.seat_manager.seats[seat_id].is_occupied:
                     del seat_emotions[seat_id]
                     detector.sleep_detector.reset(seat_id)
-        
+            runtime_profiler.record_stage("cleanup_seats", cleanup_start)
+
         # Draw seat zones first (background) when seat manager is available
         if detector.use_seats and detector.seat_manager:
+            draw_zones_start = time.perf_counter()
             frame = detector.seat_manager.draw_seat_zones(frame)
-        
+            runtime_profiler.record_stage("draw_seat_zones", draw_zones_start)
+
         # Draw face boxes with seat assignments
-        frame = detector.draw_enhanced_boxes(frame, boxes, probs, landmarks, 
+        draw_boxes_start = time.perf_counter()
+        frame = detector.draw_enhanced_boxes(frame, boxes, probs, landmarks,
                                              seat_assignments, seat_emotions)
-        
+        runtime_profiler.record_stage("draw_boxes", draw_boxes_start)
+
         # Draw dashboard
+        draw_dashboard_start = time.perf_counter()
         frame = detector.add_dashboard(frame, boxes, probs)
-        
+        runtime_profiler.record_stage("draw_dashboard", draw_dashboard_start)
+
         cv2.putText(frame, f"FPS: {fps:.1f}", (frame.shape[1] - 200, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
         window_title = 'SAP Seat-Based Emotion Detection' if use_seats else 'SAP Face Detection'
+        display_start = time.perf_counter()
         cv2.imshow(window_title, frame)
-        
+
         key = cv2.waitKey(1) & 0xFF
+        runtime_profiler.record_stage("imshow_waitkey", display_start)
+        runtime_profiler.end_frame()
+
         if key == ord('q'):
             break
-        elif key == ord('s'):
-            screenshot_name = f"screenshot_{screenshot_count:03d}.jpg"
-            cv2.imwrite(screenshot_name, frame)
-            print(f"Screenshot saved: {screenshot_name}")
-            screenshot_count += 1
         elif key == ord('r') and use_seats:
             # Reset all seats
             detector.seat_manager.reset_all_seats()

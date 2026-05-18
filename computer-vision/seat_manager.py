@@ -91,6 +91,9 @@ class SeatManager:
         self.cols = cols or getattr(config, 'SEAT_GRID_COLS', 2)
         self.vacancy_timeout = vacancy_timeout or getattr(config, 'SEAT_VACANCY_TIMEOUT', 5.0)
         self.embedding_threshold = embedding_threshold or getattr(config, 'SEAT_EMBEDDING_THRESHOLD', 0.7)
+        self.use_embeddings = bool(getattr(config, 'SEAT_USE_EMBEDDINGS', True))
+        self.reid_interval = float(getattr(config, 'SEAT_REID_INTERVAL', 0.5))
+        self._last_reid_time = 0.0
         self.seat_names = getattr(config, 'SEAT_NAMES', None)
         self.calibration_file = calibration_file or CALIBRATION_FILE
         
@@ -346,37 +349,49 @@ class SeatManager:
         assigned_faces = set()
         assigned_seats = set()
         
-        # First pass: Match by embedding
-        for i, box in enumerate(boxes):
-            if i in assigned_faces:
-                continue
-                
-            x1, y1, x2, y2 = box.astype(int)
-            face_img = frame[max(0, y1):min(frame.shape[0], y2), 
-                            max(0, x1):min(frame.shape[1], x2)]
-            
-            if face_img.size == 0:
-                continue
-                
-            face_embedding = self.get_face_embedding(face_img)
-            
-            for seat_id, seat in self.seats.items():
-                if seat_id in assigned_seats:
+        # First pass: Match by embedding (throttled to avoid frame stalls).
+        occupied_with_lock = any(
+            seat.is_occupied and seat.locked_embedding is not None
+            for seat in self.seats.values()
+        )
+        run_reid = (
+            self.use_embeddings
+            and occupied_with_lock
+            and (current_time - self._last_reid_time) >= self.reid_interval
+        )
+
+        if run_reid:
+            self._last_reid_time = current_time
+            for i, box in enumerate(boxes):
+                if i in assigned_faces:
                     continue
-                if not seat.is_occupied or seat.locked_embedding is None:
+
+                x1, y1, x2, y2 = box.astype(int)
+                face_img = frame[max(0, y1):min(frame.shape[0], y2),
+                                 max(0, x1):min(frame.shape[1], x2)]
+
+                if face_img.size == 0:
                     continue
-                    
-                similarity = self.compute_similarity(face_embedding, seat.locked_embedding)
-                
-                if similarity >= self.embedding_threshold:
-                    assignments[seat_id] = (i, box)
-                    seat.last_seen_time = current_time
-                    if face_embedding is not None:
-                        seat.locked_embedding = 0.9 * seat.locked_embedding + 0.1 * face_embedding
-                        seat.locked_embedding /= np.linalg.norm(seat.locked_embedding)
-                    assigned_faces.add(i)
-                    assigned_seats.add(seat_id)
-                    break
+
+                face_embedding = self.get_face_embedding(face_img)
+
+                for seat_id, seat in self.seats.items():
+                    if seat_id in assigned_seats:
+                        continue
+                    if not seat.is_occupied or seat.locked_embedding is None:
+                        continue
+
+                    similarity = self.compute_similarity(face_embedding, seat.locked_embedding)
+
+                    if similarity >= self.embedding_threshold:
+                        assignments[seat_id] = (i, box)
+                        seat.last_seen_time = current_time
+                        if face_embedding is not None:
+                            seat.locked_embedding = 0.9 * seat.locked_embedding + 0.1 * face_embedding
+                            seat.locked_embedding /= np.linalg.norm(seat.locked_embedding)
+                        assigned_faces.add(i)
+                        assigned_seats.add(seat_id)
+                        break
         
         # Second pass: Assign by centroid
         for i, (potential_seat, dist, box) in face_to_potential_seats.items():
@@ -384,28 +399,30 @@ class SeatManager:
                 continue
                 
             seat = self.seats[potential_seat]
-            
-            seat_available = (
-                not seat.is_occupied or 
-                (current_time - seat.last_seen_time > self.vacancy_timeout)
+
+            seat_recently_seen = (
+                seat.is_occupied and
+                (current_time - seat.last_seen_time) <= self.vacancy_timeout
             )
-            
-            if seat_available:
-                x1, y1, x2, y2 = box.astype(int)
-                face_img = frame[max(0, y1):min(frame.shape[0], y2),
-                                max(0, x1):min(frame.shape[1], x2)]
-                
-                face_embedding = self.get_face_embedding(face_img) if face_img.size > 0 else None
-                
+
+            if seat_recently_seen:
+                # Keep the current occupant attached while their face remains inside
+                # the same zone. This prevents seat flicker when embeddings are off.
+                seat.last_seen_time = current_time
+                assignments[potential_seat] = (i, box)
+                assigned_faces.add(i)
+                assigned_seats.add(potential_seat)
+            else:
                 seat.is_occupied = True
                 seat.last_seen_time = current_time
-                seat.locked_embedding = face_embedding
+                seat.locked_embedding = None  # Don't compute now — let re-ID pass handle it later
                 seat.emotion_history = []
+                seat.emotion_probability_history = []
                 
                 assignments[potential_seat] = (i, box)
                 assigned_faces.add(i)
                 assigned_seats.add(potential_seat)
-        
+                    
         # Check for timeouts
         for seat_id, seat in self.seats.items():
             if seat_id not in assigned_seats and seat.is_occupied:

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crew Login</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg0: #0f172a;
+            --bg1: #1e293b;
+            --card: #ffffff;
+            --text: #0f172a;
+            --muted: #475569;
+            --accent: #0ea5e9;
+            --danger: #dc2626;
+            --ok: #16a34a;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: 'DM Sans', sans-serif;
+            background: radial-gradient(circle at top right, #1d4ed8 0%, var(--bg1) 32%, var(--bg0) 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 390px;
+            background: var(--card);
+            border-radius: 20px;
+            box-shadow: 0 20px 50px rgba(2, 6, 23, 0.4);
+            padding: 36px 32px 32px;
+            position: relative;
+        }
+
+        /* ── Logo: centred hero element ── */
+        .brand {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 6px;
+        }
+
+        .logo-ring {
+            width: 72px;
+            height: 72px;
+            border-radius: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%);
+            box-shadow:
+                0 6px 20px rgba(14, 165, 233, 0.35),
+                0 0 0 4px rgba(14, 165, 233, 0.08);
+        }
+
+        .brand-logo {
+            width: 46px;
+            height: 46px;
+            object-fit: contain;
+            border-radius: 10px;
+            /* blend a white-ish logo into the gradient ring */
+            filter: brightness(0) invert(1);
+        }
+
+        .title {
+            margin: 0;
+            color: var(--text);
+            font-size: 1.55rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .subtitle {
+            margin: 4px 0 24px;
+            color: var(--muted);
+            font-size: 0.92rem;
+            text-align: center;
+        }
+
+        /* ── Form ── */
+        .field {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 0.88rem;
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        input {
+            width: 100%;
+            border: 1.5px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 11px 14px;
+            font-size: 0.95rem;
+            font-family: inherit;
+            outline: none;
+            background: #f8fafc;
+            transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        input:focus {
+            border-color: var(--accent);
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+        }
+
+        .button {
+            width: 100%;
+            border: none;
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 0.95rem;
+            font-weight: 700;
+            font-family: inherit;
+            color: #fff;
+            background: linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%);
+            cursor: pointer;
+            margin-top: 6px;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+            box-shadow: 0 4px 14px rgba(3, 105, 161, 0.3);
+        }
+
+        .button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(3, 105, 161, 0.4);
+        }
+
+        .button:active {
+            transform: translateY(0);
+        }
+
+        .button:disabled {
+            opacity: 0.6;
+            cursor: wait;
+            transform: none;
+        }
+
+        .message {
+            margin-top: 12px;
+            font-size: 0.9rem;
+            min-height: 20px;
+            text-align: center;
+        }
+
+        .error { color: var(--danger); }
+        .success { color: var(--ok); }
+
+        .hint {
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid #e2e8f0;
+            color: var(--muted);
+            font-size: 0.82rem;
+        }
+    </style>
+</head>
+<body>
+    <main class="login-card">
+        <div class="brand">
+            <div class="logo-ring">
+                <img class="brand-logo" src="/static/images/logo.png" alt="SAP Experience logo">
+            </div>
+            <h1 class="title">Crew Access</h1>
+        </div>
+        <p class="subtitle">Sign in to open the crew dashboard.</p>
+
+        <form id="loginForm">
+            <div class="field">
+                <label for="username">Username</label>
+                <input id="username" name="username" type="text" autocomplete="username" required>
+            </div>
+            <div class="field">
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" autocomplete="current-password" required>
+            </div>
+            <button id="submitBtn" class="button" type="submit">Sign In</button>
+            <div id="message" class="message"></div>
+        </form>
+    </main>
+
+    <script>
+        const form = document.getElementById('loginForm');
+        const message = document.getElementById('message');
+        const submitBtn = document.getElementById('submitBtn');
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            message.className = 'message';
+            message.textContent = '';
+            submitBtn.disabled = true;
+
+            const payload = {
+                username: form.username.value.trim(),
+                password: form.password.value,
+            };
+
+            try {
+                const response = await fetch('/api/crew/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    message.className = 'message error';
+                    message.textContent = data.detail || 'Login failed';
+                    return;
+                }
+
+                message.className = 'message success';
+                message.textContent = 'Login successful. Redirecting...';
+                window.location.href = '/crew-dashboard';
+            } catch (error) {
+                message.className = 'message error';
+                message.textContent = 'Unable to reach server. Try again.';
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
