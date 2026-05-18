@@ -9,6 +9,7 @@ A multi-language travel assistant for aircraft passengers with:
 - Conversation history per seat
 """
 import asyncio
+import concurrent.futures
 import json
 import os
 import secrets
@@ -243,7 +244,7 @@ class RenderingPipeline:
         """Enqueue a frame for rendering (non-blocking)."""
         with self.queue_lock:
             # Drop oldest frame if backlog exceeds threshold
-            if self.skip_if_backlog and len(self.queue) > self.queue_max:
+            if self.skip_if_backlog and len(self.queue) >= self.queue_max:
                 dropped = self.queue.pop(0)
                 if self.debug_fps:
                     print(f"[RENDER] Frame dropped (backlog={len(self.queue)}); ts={timestamp:.2f}")
@@ -300,7 +301,7 @@ class RenderingPipeline:
                 
                 # Update global frame with thread safety
                 with frame_lock:
-                    current_frame = rendered_frame.copy()
+                    current_frame = rendered_frame
                 
                 self._frame_count += 1
                 
@@ -385,6 +386,11 @@ class CVStreamProcessor:
         self._last_sleep_check = {}
         self._mood_cooldowns: dict = {}  # seat_id -> timestamp of last mood alert
         self._last_analytics_snapshot: float = 0.0
+        self._process_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="cv-process",
+        )
+        self._pending_process_future = None
 
         # MQTT publisher — sends seat emotions to Arduino.
         # Priority: explicit route payload override > env flag > CV config.
@@ -462,7 +468,7 @@ class CVStreamProcessor:
                             continue
 
                         is_sleeping = False
-                        if self.sleep_detector.available and assigned_seats:
+                        if self.sleep_detector.sleep_available and assigned_seats:
                             should_compute_ear = any(
                                 (current_time - self._last_sleep_check.get(seat_id, 0.0)) >= self.sleep_check_interval
                                 for seat_id in assigned_seats
@@ -565,6 +571,15 @@ class CVStreamProcessor:
             'emotions': seat_emotions,
         }
         return frame, metadata
+
+    def _process_and_enqueue(self, frame):
+        """Process a captured frame and hand the result to the renderer."""
+        try:
+            raw_frame, metadata = self.process_frame(frame)
+            if self.running and self.rendering_pipeline.running:
+                self.rendering_pipeline.enqueue(raw_frame, metadata, time.time())
+        except Exception as exc:
+            print(f"[CV] Error while processing frame: {exc}")
     
     def capture_loop(self):
         """Continuous capture and processing loop"""
@@ -576,15 +591,16 @@ class CVStreamProcessor:
             if not ret:
                 time.sleep(0.1)
                 continue
-            
-            # Process the frame and get metadata
-            raw_frame, metadata = self.process_frame(frame)
-            
-            # Enqueue for async rendering (non-blocking)
-            self.rendering_pipeline.enqueue(raw_frame, metadata, time.time())
-            
-            # Small sleep to prevent CPU overload
-            time.sleep(0.01)
+
+            pending = self._pending_process_future
+            if pending is None or pending.done():
+                self._pending_process_future = self._process_executor.submit(
+                    self._process_and_enqueue,
+                    frame,
+                )
+
+            # Yield a little so capture does not busy-spin when processing is saturated.
+            time.sleep(0.005)
     
     def _check_mood_alerts(self, seat_emotions: dict, current_time: float):
         """Broadcast a crew alert when a negative emotion is detected above the confidence threshold."""
@@ -626,6 +642,8 @@ class CVStreamProcessor:
         self.running = False
         if self.thread:
             self.thread.join()
+        if self._process_executor:
+            self._process_executor.shutdown(wait=True, cancel_futures=False)
         self.rendering_pipeline.stop()
         self.cap.release()
         if self.mqtt_publisher:
@@ -671,7 +689,7 @@ def generate_frames():
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                 frame = blank
             else:
-                frame = current_frame.copy()
+                frame = current_frame
         
         # Encode frame as JPEG
         ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])

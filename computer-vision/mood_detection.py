@@ -572,12 +572,15 @@ class FaceDetector:
         
         self.emotion_detector = ConvNeXtEmotionDetector()
 
-        # detect_faces_in_frame uses MediaPipe FaceLandmarker (468 landmarks)
+        # detect_faces_in_frame uses MTCNN for initial face detection.
         self.sleep_detector = SleepDetector()
         if self.sleep_detector.available:
-            print("Face detection + sleep detection enabled (MediaPipe FaceLandmarker)")
+            if self.sleep_detector.sleep_available:
+                print("Face detection enabled (MTCNN); sleep detection enabled (FaceMesh crop checks)")
+            else:
+                print("Face detection enabled (MTCNN); sleep detection disabled (FaceMesh unavailable)")
         else:
-            print("MediaPipe unavailable — face detection and sleep detection disabled")
+            print("MTCNN unavailable — face detection disabled")
         
         # Seat-based tracking may be disabled; store flag and init only when enabled
         self.use_seats = use_seats
@@ -602,8 +605,7 @@ class FaceDetector:
         if (now - self._last_face_detection_time) < self.face_detection_interval:
             return self._last_detection_output
 
-        # MediaPipe FaceLandmarker handles BGR->RGB conversion internally.
-        # Returns (boxes, probs, landmarks) in the same shape as MTCNN did:
+        # SleepDetector handles BGR->RGB conversion for MTCNN and returns:
         #   boxes:     ndarray (N, 4)    [x1, y1, x2, y2]
         #   probs:     ndarray (N,)      confidence (1.0 placeholder)
         #   landmarks: ndarray (N, 5, 2) [left_eye, right_eye, nose,
@@ -895,7 +897,7 @@ def main():
                     if face_img.size > 0:
                         # Check for sleeping via EAR before running ConvNeXt
                         sleep_check_start = time.perf_counter()
-                        if detector.sleep_detector.available:
+                        if detector.sleep_detector.sleep_available:
                             ear = None
                             if (
                                 full_face_landmarks is not None

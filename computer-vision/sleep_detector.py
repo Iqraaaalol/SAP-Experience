@@ -1,15 +1,26 @@
 """
-Sleep detection via Eye Aspect Ratio (EAR) using MediaPipe FaceMesh.
+Face detection via MTCNN with MediaPipe FaceMesh fallback for EAR-based sleep detection.
 
-When a face crop is provided, FaceMesh extracts 468 landmarks,
-from which the 6 left-eye and 6 right-eye contour points are used
-to compute EAR. Sustained low EAR (eyes closed) over a configurable
-duration triggers a 'sleeping' classification.
+MTCNN provides the initial full-frame detector so distant/small faces are easier to pick up.
+When a face crop is provided, FaceMesh extracts 468 landmarks, from which the 6 left-eye
+and 6 right-eye contour points are used to compute EAR. Sustained low EAR (eyes closed)
+over a configurable duration triggers a 'sleeping' classification.
 """
 
 import numpy as np
 import os
 import urllib.request
+
+import torch
+
+try:
+    from facenet_pytorch import MTCNN
+    facenet_pytorch = True
+except ImportError:
+    MTCNN = None
+    facenet_pytorch = None
+    print("Warning: facenet-pytorch not installed. MTCNN face detection will be disabled.")
+    print("Install with: pip install facenet-pytorch")
 
 try:
     from mediapipe.tasks import python as mp_python
@@ -31,27 +42,27 @@ try:
     import config
     EAR_THRESHOLD = getattr(config, 'EAR_THRESHOLD', 0.25)
     SLEEP_DURATION = getattr(config, 'SLEEP_DURATION', 3.0)
-    FACE_DETECTION_SCALE = float(getattr(config, 'FACE_DETECTION_SCALE', 0.6))
-    FACE_DETECTION_UPSCALE = float(getattr(config, 'FACE_DETECTION_UPSCALE', 1.0))
-    FACE_DETECTION_RETRY_FULL_RES = bool(getattr(config, 'FACE_DETECTION_RETRY_FULL_RES', True))
-    FACE_MIN_DETECTION_CONFIDENCE = float(getattr(config, 'FACE_MIN_DETECTION_CONFIDENCE', 0.2))
-    FACE_MIN_PRESENCE_CONFIDENCE = float(getattr(config, 'FACE_MIN_PRESENCE_CONFIDENCE', 0.2))
-    FACE_MIN_TRACKING_CONFIDENCE = float(getattr(config, 'FACE_MIN_TRACKING_CONFIDENCE', 0.2))
+    MTCNN_MIN_FACE_SIZE = int(getattr(config, 'MTCNN_MIN_FACE_SIZE', 16))
+    MTCNN_THRESHOLDS = getattr(config, 'MTCNN_THRESHOLDS', [0.55, 0.65, 0.65])
+    MTCNN_FACTOR = float(getattr(config, 'MTCNN_FACTOR', 0.709))
 except ImportError:
     EAR_THRESHOLD = 0.25
     SLEEP_DURATION = 3.0
-    FACE_DETECTION_SCALE = 0.6
-    FACE_DETECTION_UPSCALE = 1.0
-    FACE_DETECTION_RETRY_FULL_RES = True
-    FACE_MIN_DETECTION_CONFIDENCE = 0.2
-    FACE_MIN_PRESENCE_CONFIDENCE = 0.2
-    FACE_MIN_TRACKING_CONFIDENCE = 0.2
+    MTCNN_MIN_FACE_SIZE = 16
+    MTCNN_THRESHOLDS = [0.55, 0.65, 0.65]
+    MTCNN_FACTOR = 0.709
     
 # MediaPipe FaceMesh landmark indices for eye contours
 # Left eye (from the subject's perspective)
 LEFT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
 # Right eye (from the subject's perspective)
 RIGHT_EYE_INDICES = [33, 160, 158, 133, 153, 144]
+
+
+def _normalize_thresholds(thresholds):
+    if isinstance(thresholds, (list, tuple)) and len(thresholds) == 3:
+        return [max(0.0, min(1.0, float(value))) for value in thresholds]
+    return [0.55, 0.65, 0.65]
 
 
 def _eye_aspect_ratio(eye_points):
@@ -98,18 +109,18 @@ class SleepDetector:
     def __init__(self, ear_threshold=None, sleep_duration=None):
         self.ear_threshold = ear_threshold if ear_threshold is not None else EAR_THRESHOLD
         self.sleep_duration = sleep_duration if sleep_duration is not None else SLEEP_DURATION
-        self.face_detection_scale = max(0.3, min(1.0, float(FACE_DETECTION_SCALE)))
-        self.face_detection_upscale = max(1.0, min(2.5, float(FACE_DETECTION_UPSCALE)))
-        self.face_detection_retry_full_res = FACE_DETECTION_RETRY_FULL_RES
-        self.min_face_detection_confidence = max(0.0, min(1.0, FACE_MIN_DETECTION_CONFIDENCE))
-        self.min_face_presence_confidence = max(0.0, min(1.0, FACE_MIN_PRESENCE_CONFIDENCE))
-        self.min_tracking_confidence = max(0.0, min(1.0, FACE_MIN_TRACKING_CONFIDENCE))
+        self.mtcnn_min_face_size = max(8, int(MTCNN_MIN_FACE_SIZE))
+        self.mtcnn_thresholds = _normalize_thresholds(MTCNN_THRESHOLDS)
+        self.mtcnn_factor = max(0.1, min(0.99, float(MTCNN_FACTOR)))
 
         # Per-seat state: seat_id -> timestamp when eyes first closed
         self._eyes_closed_since = {}
         self._last_full_face_landmarks = None
 
-        # Initialize MediaPipe FaceMesh
+        # Initial face detector used by the live pipeline.
+        self._mtcnn = self._create_mtcnn() if facenet_pytorch is not None else None
+
+        # Initialize MediaPipe FaceMesh for EAR-based sleep detection on face crops.
         self._face_mesh = None
         if mp is not None and vision is not None:
             # Download model if not present
@@ -124,6 +135,24 @@ class SleepDetector:
                     return
             
             self._face_mesh = self._create_landmarker(num_faces=1)
+
+    def _create_mtcnn(self):
+        """Create the MTCNN detector used for initial full-frame face detection."""
+        if MTCNN is None:
+            return None
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        return MTCNN(
+            image_size=160,
+            margin=0,
+            min_face_size=self.mtcnn_min_face_size,
+            thresholds=self.mtcnn_thresholds,
+            factor=self.mtcnn_factor,
+            post_process=False,
+            keep_all=True,
+            select_largest=False,
+            device=device,
+        )
 
     def _create_landmarker(self, num_faces):
         """Create a FaceLandmarker with shared confidence thresholds."""
@@ -142,7 +171,12 @@ class SleepDetector:
 
     @property
     def available(self):
-        """Whether sleep detection is available (mediapipe installed)."""
+        """Whether the initial MTCNN face detector is available."""
+        return self._mtcnn is not None
+
+    @property
+    def sleep_available(self):
+        """Whether MediaPipe FaceMesh is available for crop-based EAR detection."""
         return self._face_mesh is not None
 
     def compute_ear(self, face_crop_bgr):
@@ -155,7 +189,7 @@ class SleepDetector:
         Returns:
             Average EAR (float), or None if FaceMesh fails to detect a face.
         """
-        if not self.available:
+        if not self.sleep_available:
             return None
 
         if face_crop_bgr is None or face_crop_bgr.size == 0:
@@ -193,18 +227,41 @@ class SleepDetector:
         return (left_ear + right_ear) / 2.0
 
     def compute_ear_from_landmarks(self, face_landmarks_mp):
-        """Compute EAR directly from full-frame MediaPipe landmarks (no re-detection)."""
+        """Compute EAR from full-frame MediaPipe landmarks when available.
+
+        MTCNN only provides 5-point facial landmarks, which are not enough for EAR, so this
+        method returns None for that format and the caller should fall back to `compute_ear()`.
+        """
         if face_landmarks_mp is None:
             return None
 
-        def _get_points(indices):
-            return np.array([
-                [face_landmarks_mp[i].x, face_landmarks_mp[i].y]
-                for i in indices
-            ])
+        max_required_index = max(max(LEFT_EYE_INDICES), max(RIGHT_EYE_INDICES))
 
-        left_eye = _get_points(LEFT_EYE_INDICES)
-        right_eye = _get_points(RIGHT_EYE_INDICES)
+        try:
+            if isinstance(face_landmarks_mp, np.ndarray):
+                if (
+                    face_landmarks_mp.ndim != 2
+                    or face_landmarks_mp.shape[0] <= max_required_index
+                    or face_landmarks_mp.shape[1] < 2
+                ):
+                    return None
+
+                def _get_points(indices):
+                    return np.array([face_landmarks_mp[i, :2] for i in indices], dtype=np.float32)
+            else:
+                if len(face_landmarks_mp) <= max_required_index:
+                    return None
+
+                def _get_points(indices):
+                    return np.array([
+                        [face_landmarks_mp[i].x, face_landmarks_mp[i].y]
+                        for i in indices
+                    ], dtype=np.float32)
+
+            left_eye = _get_points(LEFT_EYE_INDICES)
+            right_eye = _get_points(RIGHT_EYE_INDICES)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
 
         left_ear = _eye_aspect_ratio(left_eye)
         right_ear = _eye_aspect_ratio(right_eye)
@@ -267,142 +324,61 @@ class SleepDetector:
             return 0.0
         return intersection / union
 
-    def detect_faces_in_frame(self, frame_bgr, max_faces=4):
+    def detect_faces_in_frame(self, frame_bgr, max_faces=None):
         """
-        Detect all faces in a full frame using MediaPipe FaceLandmarker.
-
-        Uses multi-scale detection: runs the detector at progressively higher
-        resolutions (FACE_DETECTION_SCALE → 1.0 → FACE_DETECTION_UPSCALE) and
-        merges results via IoU-based deduplication. This catches nearby faces
-        cheaply at low resolution while discovering distant/small faces at
-        higher resolution.
+        Detect all faces in a full frame using MTCNN.
 
         Returns output compatible with MTCNN's detect(..., landmarks=True):
             boxes     - ndarray (N, 4)  [x1, y1, x2, y2] in pixel coords
-            probs     - ndarray (N,)    detection confidence (1.0 placeholder)
+            probs     - ndarray (N,)    detection confidence
             landmarks - ndarray (N, 5, 2) ordered as:
-                          [left_eye_center, right_eye_center,
-                           nose_tip, left_mouth_corner, right_mouth_corner]
-                        where left/right are from the VIEWER's perspective
-                        (matching MTCNN's coordinate convention).
+                          [left_eye, right_eye, nose_tip, left_mouth, right_mouth]
 
-        All three are None when no faces are detected or MediaPipe is unavailable.
-
-        MediaPipe landmark indices used:
-            Eye contours (viewer's left  = subject's right): RIGHT_EYE_INDICES
-            Eye contours (viewer's right = subject's left):  LEFT_EYE_INDICES
-            Nose tip:   4
-            Mouth left  (viewer's left):  291
-            Mouth right (viewer's right):  61
+        All three are None when no faces are detected or MTCNN is unavailable.
         """
         if not self.available or frame_bgr is None or frame_bgr.size == 0:
             self._last_full_face_landmarks = None
             return None, None, None
 
         import cv2
-        from mediapipe import Image, ImageFormat
 
-        # Lazily create / cache a multi-face landmarker
-        if (not hasattr(self, '_multi_face_landmarker')
-                or getattr(self, '_multi_face_max', 0) != max_faces):
-            self._multi_face_landmarker = self._create_landmarker(num_faces=max_faces)
-            self._multi_face_max = max_faces
+        if max_faces is None:
+            max_faces = int(getattr(config, 'MTCNN_MAX_FACES', 4))
+        max_faces = max(1, int(max_faces))
 
-        h, w = frame_bgr.shape[:2]
+        rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        boxes, probs, points = self._mtcnn.detect(rgb_frame, landmarks=True)
 
-        # Build ordered list of unique detection scales.
-        # FACE_DETECTION_SCALE  – fast downscaled pass for nearby faces
-        # 1.0                   – full resolution for medium-distance faces
-        # FACE_DETECTION_UPSCALE – upscaled pass for distant / small faces
-        candidate_scales = [max(0.3, min(1.0, self.face_detection_scale))]
-        if self.face_detection_retry_full_res:
-            candidate_scales.append(1.0)
-        if self.face_detection_upscale > 1.05:
-            candidate_scales.append(min(2.5, self.face_detection_upscale))
-
-        # Deduplicate scales that are very close together
-        scales = [candidate_scales[0]]
-        for s in candidate_scales[1:]:
-            if all(abs(s - existing) > 0.05 for existing in scales):
-                scales.append(s)
-
-        all_boxes = []
-        all_probs = []
-        all_landmarks = []
-        all_face_lms = []
-        iou_threshold = 0.3  # Overlap above this → same face, skip duplicate
-
-        for scale in scales:
-            if abs(scale - 1.0) > 1e-3:
-                detect_w = max(320, int(w * scale))
-                detect_h = max(180, int(h * scale))
-                detect_frame = cv2.resize(frame_bgr, (detect_w, detect_h),
-                                          interpolation=cv2.INTER_LINEAR)
-            else:
-                detect_w, detect_h = w, h
-                detect_frame = frame_bgr
-
-            rgb = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2RGB)
-            mp_image = Image(image_format=ImageFormat.SRGB, data=rgb)
-            results = self._multi_face_landmarker.detect(mp_image)
-
-            if not results.face_landmarks:
-                continue
-
-            scale_x = w / float(detect_w)
-            scale_y = h / float(detect_h)
-
-            for face_lms in results.face_landmarks:
-                xs = [lm.x * detect_w * scale_x for lm in face_lms]
-                ys = [lm.y * detect_h * scale_y for lm in face_lms]
-                x1 = max(0, int(min(xs)))
-                y1 = max(0, int(min(ys)))
-                x2 = min(w, int(max(xs)))
-                y2 = min(h, int(max(ys)))
-                box = [x1, y1, x2, y2]
-
-                # Skip faces that overlap with one already found at a prior scale
-                if any(self._compute_iou(box, prev) > iou_threshold
-                       for prev in all_boxes):
-                    continue
-
-                all_boxes.append(box)
-                all_probs.append(1.0)
-                all_face_lms.append(face_lms)
-
-                def _avg(indices, _fl=face_lms, _dw=detect_w, _dh=detect_h,
-                         _sx=scale_x, _sy=scale_y):
-                    pts = np.array([[_fl[i].x * _dw * _sx, _fl[i].y * _dh * _sy]
-                                    for i in indices])
-                    return pts.mean(axis=0)
-
-                # Viewer's left eye  = subject's right eye = RIGHT_EYE_INDICES
-                # Viewer's right eye = subject's left eye  = LEFT_EYE_INDICES
-                left_eye_center  = _avg(RIGHT_EYE_INDICES)
-                right_eye_center = _avg(LEFT_EYE_INDICES)
-                nose_tip         = np.array([face_lms[4].x * w,   face_lms[4].y * h])
-                mouth_left       = np.array([face_lms[291].x * w, face_lms[291].y * h])
-                mouth_right      = np.array([face_lms[61].x * w,  face_lms[61].y * h])
-
-                all_landmarks.append([left_eye_center, right_eye_center,
-                                       nose_tip, mouth_left, mouth_right])
-
-            # Stop trying higher scales if we already found max_faces
-            if len(all_boxes) >= max_faces:
-                break
-
-        if not all_boxes:
+        if boxes is None or probs is None or points is None:
             self._last_full_face_landmarks = None
             return None, None, None
 
-        # Keep full MediaPipe landmarks for optional downstream EAR calculation.
-        self._last_full_face_landmarks = all_face_lms
+        boxes = np.asarray(boxes, dtype=np.float32)
+        probs = np.asarray(probs, dtype=np.float32)
+        points = np.asarray(points, dtype=np.float32)
 
-        return (
-            np.array(all_boxes,     dtype=np.float32),
-            np.array(all_probs,     dtype=np.float32),
-            np.array(all_landmarks, dtype=np.float32),
-        )
+        if boxes.ndim == 1:
+            boxes = boxes.reshape(1, -1)
+        if probs.ndim == 0:
+            probs = probs.reshape(1)
+        if points.ndim == 2:
+            points = points.reshape(1, *points.shape)
+
+        if boxes.shape[0] == 0:
+            self._last_full_face_landmarks = None
+            return None, None, None
+
+        order = np.argsort(probs)[::-1]
+        if order.size > max_faces:
+            order = order[:max_faces]
+
+        boxes = boxes[order]
+        probs = probs[order]
+        points = points[order]
+
+        self._last_full_face_landmarks = points.copy()
+
+        return boxes, probs, points
 
     def get_ear_state(self, seat_id):
         """
@@ -418,5 +394,5 @@ class SleepDetector:
         }
 
     def get_last_full_face_landmarks(self):
-        """Return full-frame MediaPipe landmarks from the most recent face detection pass."""
+        """Return landmarks from the most recent face detection pass."""
         return self._last_full_face_landmarks
