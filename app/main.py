@@ -345,6 +345,11 @@ class CVStreamProcessor:
         import config as cv_config
         from mood_detection import FaceDetector, MQTTPublisher
         from seat_manager import SeatManager
+        import torch
+        
+        # Limit underlying C++ threads to prevent starving the event loop
+        torch.set_num_threads(2)
+        cv2.setNumThreads(2)
 
         self.detector = FaceDetector()
         # Reuse the same SleepDetector instance used by FaceDetector.
@@ -419,6 +424,7 @@ class CVStreamProcessor:
     def process_frame(self, frame):
         """Process a single frame with face and emotion detection"""
         boxes, probs, landmarks = self.detector.detect_faces(frame)
+        full_face_landmarks = self.sleep_detector.get_last_full_face_landmarks()
         
         emotions_list = []
         seat_assignments = {}
@@ -473,7 +479,13 @@ class CVStreamProcessor:
                                 (current_time - self._last_sleep_check.get(seat_id, 0.0)) >= self.sleep_check_interval
                                 for seat_id in assigned_seats
                             )
-                            ear = self.sleep_detector.compute_ear(face_img) if should_compute_ear else None
+                            ear = None
+                            if should_compute_ear:
+                                if full_face_landmarks is not None and i < len(full_face_landmarks):
+                                    ear = self.sleep_detector.compute_ear_from_landmarks(full_face_landmarks[i])
+                                if ear is None:
+                                    ear = self.sleep_detector.compute_ear(face_img)
+                                    
                             for seat_id in assigned_seats:
                                 if should_compute_ear:
                                     self._last_sleep_check[seat_id] = current_time
