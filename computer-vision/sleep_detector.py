@@ -46,6 +46,7 @@ try:
     MTCNN_THRESHOLDS = getattr(config, 'MTCNN_THRESHOLDS', [0.55, 0.65, 0.65])
     MTCNN_FACTOR = float(getattr(config, 'MTCNN_FACTOR', 0.709))
 except ImportError:
+    config = None
     EAR_THRESHOLD = 0.25
     SLEEP_DURATION = 3.0
     MTCNN_MIN_FACE_SIZE = 16
@@ -112,6 +113,9 @@ class SleepDetector:
         self.mtcnn_min_face_size = max(8, int(MTCNN_MIN_FACE_SIZE))
         self.mtcnn_thresholds = _normalize_thresholds(MTCNN_THRESHOLDS)
         self.mtcnn_factor = max(0.1, min(0.99, float(MTCNN_FACTOR)))
+        self.min_face_detection_confidence = float(getattr(config, 'MIN_FACE_DETECTION_CONFIDENCE', 0.5))
+        self.min_face_presence_confidence = float(getattr(config, 'MIN_FACE_PRESENCE_CONFIDENCE', 0.5))
+        self.min_tracking_confidence = float(getattr(config, 'MIN_TRACKING_CONFIDENCE', 0.5))
 
         # Per-seat state: seat_id -> timestamp when eyes first closed
         self._eyes_closed_since = {}

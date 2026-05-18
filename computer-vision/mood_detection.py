@@ -376,7 +376,7 @@ class ConvNeXtEmotionDetector:
         }
 
         if self.device.type == 'cuda':
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.benchmark = False
         
     def align_face(self, image, landmarks):
         """
