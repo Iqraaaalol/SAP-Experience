@@ -178,6 +178,165 @@ def _publish_lighting_override(enabled: bool, scene: str) -> None:
     )
     t.start()
 
+
+# =============================================================================
+# RENDERING PIPELINE (Async Rendering Thread)
+# =============================================================================
+
+class RenderingPipeline:
+    """
+    Decoupled rendering thread that processes frames asynchronously.
+    Prevents expensive drawing operations from blocking face detection/emotion inference.
+    """
+    def __init__(self, detector, seat_manager, emotion_colors=None):
+        self.detector = detector
+        self.seat_manager = seat_manager
+        self.emotion_colors = emotion_colors or {}
+        self.queue = []
+        self.queue_lock = threading.Lock()
+        self.running = False
+        self.thread = None
+        self._frame_count = 0
+        self._last_fps_log = time.time()
+        
+        # Load rendering config
+        sys.path.insert(0, str(Path(__file__).parent.parent / "computer-vision"))
+        try:
+            import config as cv_config
+            self.render_fps_target = float(getattr(cv_config, 'RENDER_FPS_TARGET', 15))
+            self.annotations_enabled = bool(getattr(cv_config, 'RENDER_ANNOTATIONS_ENABLED', True))
+            self.render_landmarks = bool(getattr(cv_config, 'RENDER_LANDMARKS', False))
+            self.render_dashboard = bool(getattr(cv_config, 'RENDER_DASHBOARD', True))
+            self.render_seat_zones = bool(getattr(cv_config, 'RENDER_SEAT_ZONES', True))
+            self.render_preset = str(getattr(cv_config, 'RENDER_PRESET', 'medium')).lower()
+            self.debug_fps = bool(getattr(cv_config, 'DEBUG_RENDERING_FPS', False))
+            self.skip_if_backlog = bool(getattr(cv_config, 'SKIP_FRAMES_IF_BACKLOG', True))
+            self.queue_max = int(getattr(cv_config, 'RENDER_QUEUE_MAX_BACKLOG', 3))
+        except Exception as e:
+            print(f"[RENDER] Warning: failed to load rendering config: {e}. Using defaults.")
+            self.render_fps_target = 15
+            self.annotations_enabled = True
+            self.render_landmarks = False
+            self.render_dashboard = True
+            self.render_seat_zones = True
+            self.render_preset = 'medium'
+            self.debug_fps = False
+            self.skip_if_backlog = True
+            self.queue_max = 3
+        
+        # Apply preset overrides
+        if self.render_preset == 'high':
+            self.render_landmarks = True
+            self.render_dashboard = True
+            self.render_seat_zones = True
+        elif self.render_preset == 'low':
+            self.render_landmarks = False
+            self.render_dashboard = False
+            self.render_seat_zones = False
+        # 'medium' is default
+        
+        self.frame_interval = 1.0 / self.render_fps_target if self.render_fps_target > 0 else 0.0
+        print(f"[RENDER] FPS target: {self.render_fps_target}, Preset: {self.render_preset}, "
+              f"Annotations: {self.annotations_enabled}, Landmarks: {self.render_landmarks}")
+    
+    def enqueue(self, raw_frame, metadata, timestamp):
+        """Enqueue a frame for rendering (non-blocking)."""
+        with self.queue_lock:
+            # Drop oldest frame if backlog exceeds threshold
+            if self.skip_if_backlog and len(self.queue) > self.queue_max:
+                dropped = self.queue.pop(0)
+                if self.debug_fps:
+                    print(f"[RENDER] Frame dropped (backlog={len(self.queue)}); ts={timestamp:.2f}")
+            
+            self.queue.append((raw_frame, metadata, timestamp))
+    
+    def render_loop(self):
+        """Main rendering thread loop."""
+        global current_frame, frame_lock
+        last_render_time = time.time()
+        
+        while self.running:
+            now = time.time()
+            
+            # Respect target FPS (throttle rendering to reduce CPU)
+            if (now - last_render_time) < self.frame_interval:
+                time.sleep(0.001)  # Small sleep to avoid busy-waiting
+                continue
+            
+            last_render_time = now
+            
+            # Dequeue a frame
+            with self.queue_lock:
+                if not self.queue:
+                    continue
+                raw_frame, metadata, timestamp = self.queue.pop(0)
+            
+            try:
+                # Apply rendering based on config
+                rendered_frame = raw_frame.copy() if self.annotations_enabled else raw_frame
+                
+                if self.annotations_enabled:
+                    boxes = metadata.get('boxes')
+                    probs = metadata.get('probs')
+                    landmarks = metadata.get('landmarks')
+                    seat_assignments = metadata.get('seat_assignments', {})
+                    emotions = metadata.get('emotions', {})
+                    
+                    # Draw detection boxes and seat assignments
+                    rendered_frame = self.detector.draw_enhanced_boxes(
+                        rendered_frame, boxes, probs, 
+                        landmarks if self.render_landmarks else None,
+                        seat_assignments=seat_assignments,
+                        emotions=emotions
+                    )
+                    
+                    # Draw seat zones overlay
+                    if self.render_seat_zones:
+                        rendered_frame = self.seat_manager.draw_seat_zones(rendered_frame)
+                    
+                    # Draw dashboard overlay
+                    if self.render_dashboard:
+                        rendered_frame = self.detector.add_dashboard(rendered_frame, boxes, probs)
+                
+                # Update global frame with thread safety
+                with frame_lock:
+                    current_frame = rendered_frame.copy()
+                
+                self._frame_count += 1
+                
+                # Log FPS periodically
+                if self.debug_fps and (now - self._last_fps_log) >= 2.0:
+                    fps = self._frame_count / (now - self._last_fps_log)
+                    self._last_fps_log = now
+                    self._frame_count = 0
+                    with self.queue_lock:
+                        queue_size = len(self.queue)
+                    print(f"[RENDER] FPS: {fps:.1f}, Queue backlog: {queue_size}")
+                    
+            except Exception as e:
+                print(f"[RENDER] Error rendering frame: {e}")
+                continue
+    
+    def start(self):
+        """Start the rendering thread."""
+        self.running = True
+        self.thread = threading.Thread(target=self.render_loop, daemon=True)
+        self.thread.start()
+        print("[RENDER] Rendering pipeline started")
+    
+    def stop(self):
+        """Stop the rendering thread."""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2.0)
+        print("[RENDER] Rendering pipeline stopped")
+    
+    def get_queue_size(self):
+        """Get current queue backlog size."""
+        with self.queue_lock:
+            return len(self.queue)
+
+
 class CVStreamProcessor:
     def __init__(self, camera_index=0, no_mqtt: bool | None = None):
         # Import CV modules
@@ -238,6 +397,9 @@ class CVStreamProcessor:
 
         self.mqtt_publisher = None if self.no_mqtt else MQTTPublisher()
         print(f"📡 CV MQTT: {'disabled' if self.no_mqtt else 'enabled'}")
+
+        # Initialize rendering pipeline for async frame annotation
+        self.rendering_pipeline = RenderingPipeline(self.detector, self.seat_manager)
 
         self.running = False
         self.thread = None
@@ -373,7 +535,7 @@ class CVStreamProcessor:
                     self.sleep_detector.reset(seat_id)
                     self._last_sleep_check.pop(seat_id, None)
             
-            # Build emotions list from cache for drawing for drawing
+            # Build emotions list from cache (used for rendering metadata)
             for box in boxes:
                 face_id = self.get_face_id(box)
                 if face_id in self.cached_emotions:
@@ -393,19 +555,16 @@ class CVStreamProcessor:
             self.sleep_detector.reset_all()
             self._last_sleep_check.clear()
         
-        # Draw detection boxes and seat assignments
-        frame = self.detector.draw_enhanced_boxes(
-            frame, boxes, probs, landmarks, 
-            seat_assignments=seat_assignments,
-            emotions=seat_emotions
-        )
-        
-        # Draw seat zones overlay
-        frame = self.seat_manager.draw_seat_zones(frame)
-        
-        frame = self.detector.add_dashboard(frame, boxes, probs)
-        
-        return frame
+        # Return raw frame and metadata for async rendering
+        # (Drawing operations are now handled by RenderingPipeline)
+        metadata = {
+            'boxes': boxes,
+            'probs': probs,
+            'landmarks': landmarks,
+            'seat_assignments': seat_assignments,
+            'emotions': seat_emotions,
+        }
+        return frame, metadata
     
     def capture_loop(self):
         """Continuous capture and processing loop"""
@@ -418,12 +577,11 @@ class CVStreamProcessor:
                 time.sleep(0.1)
                 continue
             
-            # Process the frame
-            processed_frame = self.process_frame(frame)
+            # Process the frame and get metadata
+            raw_frame, metadata = self.process_frame(frame)
             
-            # Update global frame with thread safety
-            with frame_lock:
-                current_frame = processed_frame.copy()
+            # Enqueue for async rendering (non-blocking)
+            self.rendering_pipeline.enqueue(raw_frame, metadata, time.time())
             
             # Small sleep to prevent CPU overload
             time.sleep(0.01)
@@ -456,17 +614,19 @@ class CVStreamProcessor:
             print(f"\U0001f62f Mood alert: seat {seat_id} \u2014 {emotion} ({round(conf * 100)}%)")
 
     def start(self):
-        """Start the capture thread"""
+        """Start the capture thread and rendering pipeline"""
         self.running = True
+        self.rendering_pipeline.start()
         self.thread = threading.Thread(target=self.capture_loop, daemon=True)
         self.thread.start()
         print("📹 CV Stream Processor started")
     
     def stop(self):
-        """Stop the capture thread"""
+        """Stop the capture thread and rendering pipeline"""
         self.running = False
         if self.thread:
             self.thread.join()
+        self.rendering_pipeline.stop()
         self.cap.release()
         if self.mqtt_publisher:
             self.mqtt_publisher.stop()
@@ -474,11 +634,35 @@ class CVStreamProcessor:
 
 
 def generate_frames():
-    """Generator function for MJPEG stream"""
+    """Generator function for MJPEG stream with throttled output"""
     global current_frame
     import time
     
+    # Load rendering config
+    sys.path.insert(0, str(Path(__file__).parent.parent / "computer-vision"))
+    try:
+        import config as cv_config
+        render_fps_target = float(getattr(cv_config, 'RENDER_FPS_TARGET', 15))
+        jpeg_quality = int(getattr(cv_config, 'JPEG_QUALITY', 85))
+    except Exception as e:
+        print(f"[MJPEG] Warning: failed to load rendering config: {e}. Using defaults.")
+        render_fps_target = 15
+        jpeg_quality = 85
+    
+    frame_interval = 1.0 / render_fps_target if render_fps_target > 0 else 0.0
+    last_frame_time = time.time()
+    last_encoded_frame = None
+    
     while True:
+        now = time.time()
+        
+        # Throttle to target FPS (skip encoding if not enough time has passed)
+        if (now - last_frame_time) < frame_interval:
+            time.sleep(0.001)  # Small sleep to avoid busy-waiting
+            continue
+        
+        last_frame_time = now
+        
         with frame_lock:
             if current_frame is None:
                 # Send blank frame if no frame available
@@ -490,16 +674,15 @@ def generate_frames():
                 frame = current_frame.copy()
         
         # Encode frame as JPEG
-        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
         if not ret:
             continue
         
+        last_encoded_frame = buffer.tobytes()
+        
         # Yield frame in MJPEG format
         yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        
-        # Control frame rate
-        time.sleep(0.033)  # ~30 fps
+               b'Content-Type: image/jpeg\r\n\r\n' + last_encoded_frame + b'\r\n')
 
 
 @asynccontextmanager

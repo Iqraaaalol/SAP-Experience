@@ -73,7 +73,7 @@ EAR_THRESHOLD = 0.20       # Below this Eye Aspect Ratio, eyes are considered cl
 SLEEP_DURATION = 3.0        # Seconds of sustained eye closure to trigger sleeping state
 SLEEP_EMOTION_COLOR = (128, 128, 128)  # Gray color for sleeping overlay (BGR)
 FACE_DETECTION_INTERVAL = 0.50  # Seconds between full-frame face detections (lower = more CPU, higher = more FPS)
-FACE_DETECTION_SCALE = 0.60  # Fast downscaled pass for nearby faces (<1.0 = faster, misses distant faces)
+FACE_DETECTION_SCALE = 0.6  # Fast downscaled pass for nearby faces (<1.0 = faster, misses distant faces)
 FACE_DETECTION_UPSCALE = 1.50  # Additional upscaled pass for distant/small faces (>1.0 adds a higher-res detection pass; more CPU)
 FACE_DETECTION_RETRY_FULL_RES = True  # Include a full-resolution (1.0x) pass between downscale and upscale passes
 FACE_MIN_DETECTION_CONFIDENCE = 0.20  # Filters weak detections (only affects faces the detector already found; does NOT extend range — use UPSCALE for that)
@@ -90,6 +90,19 @@ MQTT_BROKER_PORT = 1883
 MQTT_TOPIC = "sap/seats/emotion"  # Topic format: sap/seats/emotion/{seat_id}
 MQTT_CLIENT_ID = "sap-emotion-detector"
 MQTT_PUBLISH_INTERVAL = 3.0  # Seconds between MQTT publishes (avoid flooding)
+
+# Rendering & Performance Configuration (for webpage MJPEG stream)
+RENDER_FPS_TARGET = 12  # Target FPS for MJPEG output (webpage display) — reduced from 15 for more stable playback
+RENDER_ANNOTATIONS_ENABLED = True  # Toggle all drawing/annotations on/off
+RENDER_LANDMARKS = False  # Draw facial landmarks (expensive; off by default)
+RENDER_DASHBOARD = True  # Draw dashboard overlay with face count and seat summary
+RENDER_SEAT_ZONES = True  # Draw seat zone boundaries
+RENDER_PRESET = 'medium'  # 'high' (all details), 'medium' (no landmarks), 'low' (boxes only)
+JPEG_QUALITY = 75  # JPEG compression quality (1-100) — reduced from 85 to speed up encoding
+JPEG_CACHE_FRAMES = 2  # Reuse cached JPEG for N consecutive frames if unchanged
+DEBUG_RENDERING_FPS = True  # Log actual rendering FPS and frame timings
+SKIP_FRAMES_IF_BACKLOG = True  # Drop frames from render queue if backlog exceeds threshold
+RENDER_QUEUE_MAX_BACKLOG = 3  # Max queued frames before skipping oldest
 
 # Optional: resume training from a specific checkpoint path. Set to a file path to enable.
 # Example: RESUME_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, 'resume.pth')
