@@ -68,17 +68,15 @@ SEAT_REID_INTERVAL = 0.50  # Seconds between FaceNet re-identification passes
 SEAT_UPDATE_INTERVAL = 0.20  # Seconds between seat assignment updates in realtime pipeline
 SEAT_NAMES = ["1A", "1B", "2A", "2B"]  # Row-major order: top-left, top-right, bottom-left, bottom-right
 
-# Sleep Detection Configuration (MediaPipe EAR-based)
+# Sleep Detection Configuration (MTCNN detector + MediaPipe EAR-based sleep fallback)
 EAR_THRESHOLD = 0.20       # Below this Eye Aspect Ratio, eyes are considered closed
 SLEEP_DURATION = 3.0        # Seconds of sustained eye closure to trigger sleeping state
 SLEEP_EMOTION_COLOR = (128, 128, 128)  # Gray color for sleeping overlay (BGR)
 FACE_DETECTION_INTERVAL = 0.50  # Seconds between full-frame face detections (lower = more CPU, higher = more FPS)
-FACE_DETECTION_SCALE = 0.6  # Fast downscaled pass for nearby faces (<1.0 = faster, misses distant faces)
-FACE_DETECTION_UPSCALE = 1.50  # Additional upscaled pass for distant/small faces (>1.0 adds a higher-res detection pass; more CPU)
-FACE_DETECTION_RETRY_FULL_RES = True  # Include a full-resolution (1.0x) pass between downscale and upscale passes
-FACE_MIN_DETECTION_CONFIDENCE = 0.20  # Filters weak detections (only affects faces the detector already found; does NOT extend range — use UPSCALE for that)
-FACE_MIN_PRESENCE_CONFIDENCE = 0.20   # Landmark presence confidence threshold
-FACE_MIN_TRACKING_CONFIDENCE = 0.20   # Tracking confidence threshold
+MTCNN_MIN_FACE_SIZE = 16  # Smaller values improve recall for distant faces; lower = more CPU
+MTCNN_THRESHOLDS = [0.55, 0.65, 0.65]  # Lower values improve recall; higher values reduce false positives
+MTCNN_FACTOR = 0.709  # Scale pyramid factor used by MTCNN; keep near default for stability
+MTCNN_MAX_FACES = 4  # Limit faces returned per frame to match the cabin seat grid
 SLEEP_CHECK_INTERVAL = 0.60  # Seconds between per-face EAR landmark checks
 EMOTION_UPDATE_INTERVAL = 0.60  # Seconds between mood inference passes
 EMOTION_USE_AMP = True  # Use mixed precision (CUDA) for faster emotion inference

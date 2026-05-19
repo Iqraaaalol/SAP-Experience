@@ -474,17 +474,7 @@ class SeatManager:
                 seat.emotion_history = seat.emotion_history[-10:]
     
     def _get_smoothed_emotion(self, seat: SeatState) -> str:
-        """Get emotion by averaging probability distributions over time.
-        
-        This reduces flickering by considering recent probability distributions
-        rather than just the max prediction at each timestep.
-        
-        Args:
-            seat: SeatState with probability history
-            
-        Returns:
-            Smoothed emotion label
-        """
+        """Get emotion by averaging probability distributions over time."""
         if not seat.emotion_probability_history:
             return seat.current_emotion or 'neutral'
         
@@ -499,9 +489,27 @@ class SeatManager:
         for emotion in avg_probs:
             avg_probs[emotion] /= num_samples
         
-        # Return emotion with highest average probability
         if avg_probs:
-            return max(avg_probs, key=avg_probs.get)
+            best_new_emotion = max(avg_probs, key=avg_probs.get)
+            
+            # --- HYSTERESIS FIX START ---
+            # If we already have a locked-in emotion, require the new emotion to 
+            # beat the current one by a minimum threshold (e.g., 5% margin)
+            HYSTERESIS_MARGIN = 0.05
+            
+            current_emo = seat.current_emotion
+            if current_emo and current_emo in avg_probs and current_emo != best_new_emotion:
+                current_prob = avg_probs[current_emo]
+                new_prob = avg_probs[best_new_emotion]
+                
+                # If the new emotion hasn't convincingly beaten the current one,
+                # reject the change and stick with the current emotion.
+                if (new_prob - current_prob) < HYSTERESIS_MARGIN:
+                    return current_emo
+            # --- HYSTERESIS FIX END ---
+                    
+            return best_new_emotion
+            
         return 'neutral'
     
     def draw_seat_zones(self, frame: np.ndarray, show_labels: bool = True) -> np.ndarray:
